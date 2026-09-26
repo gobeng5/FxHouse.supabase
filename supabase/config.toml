@@ -1,0 +1,7 @@
+project_id = "isxoxcyebjrsnusphybp"
+
+[functions.signal-engine]
+verify_jwt = false
+
+[functions.send-telegram]
+verify_jwt = false

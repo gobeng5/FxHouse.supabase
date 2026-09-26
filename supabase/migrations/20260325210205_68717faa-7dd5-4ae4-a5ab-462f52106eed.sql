@@ -1,0 +1,1 @@
+ALTER TABLE public.trades ADD COLUMN target_hit text;
