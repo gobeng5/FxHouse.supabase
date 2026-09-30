@@ -14,6 +14,72 @@ const corsHeaders = {
 // ws.derivws.com endpoint, which went dark on 2026-09-20 while the public one
 // stayed up, so the engine lost data while the app kept working.
 const DERIV_APP_ID = Deno.env.get('DERIV_APP_ID') ?? '33WEdZurDjmrV0NAA8yZC';
+
+// --- Telegram alert helpers (mirrors src/hooks/useTelegramAlert.ts formatting) ---
+const escapeMd = (text: string): string => text.replace(/[_*`\[\]]/g, '');
+
+const extractStructuralGate = (reasoning: string): string => {
+  const triggers: string[] = [];
+  if (/BOS confirmed/i.test(reasoning)) triggers.push('BOS ✅');
+  if (/CHoCH confirmed/i.test(reasoning)) triggers.push('CHoCH ✅');
+  if (/Liquidity sweep.*confirmed/i.test(reasoning)) triggers.push('Liq Sweep ✅');
+  if (/HH.HL structure/i.test(reasoning)) triggers.push('HH/HL Structure ✅');
+  if (/LH.LL structure/i.test(reasoning)) triggers.push('LH/LL Structure ✅');
+  if (/unmitigated OB/i.test(reasoning)) {
+    const match = reasoning.match(/(\d+)\s*unmitigated OB/i);
+    triggers.push(`${match ? match[1] : ''} OBs ✅`);
+  }
+  return triggers.length > 0 ? triggers.join(' | ') : 'Structure Aligned ✅';
+};
+
+async function sendTelegramSignalAlert(
+  supabase: ReturnType<typeof createClient>,
+  settings: Record<string, any>,
+  saved: Record<string, any>,
+) {
+  if (!settings.telegram_enabled || !settings.telegram_bot_token || !settings.telegram_chat_id) return;
+
+  const direction = saved.direction === 'bullish' ? '🟢 LONG' : '🔴 SHORT';
+  const rr = saved.entry_price && saved.stop_loss && saved.take_profit_2
+    ? Math.abs(saved.take_profit_2 - saved.entry_price) / Math.abs(saved.entry_price - saved.stop_loss)
+    : 0;
+  const gate = extractStructuralGate(saved.reasoning || '');
+
+  const message = [
+    `📊 *FX Swing Bot Signal*`,
+    ``,
+    `🏷 *${saved.instrument}* — ${direction}`,
+    `📈 Type: ${saved.trade_type.toUpperCase()}`,
+    `🎯 Confidence: ${saved.confidence}%`,
+    ``,
+    `▶️ Entry: \`${saved.entry_price}\``,
+    `🛑 Stop Loss: \`${saved.stop_loss}\``,
+    `✅ TP1: \`${saved.take_profit_1}\``,
+    `✅ TP2: \`${saved.take_profit_2}\``,
+    `✅ TP3: \`${saved.take_profit_3}\``,
+    `📐 R:R: \`${rr.toFixed(1)}\``,
+    ``,
+    `🔒 Gate: ${gate}`,
+    ``,
+    saved.reasoning ? `💡 ${escapeMd(saved.reasoning)}` : '',
+    ``,
+    `🕐 ${new Date(saved.generated_at).toUTCString()}`,
+    `🆔 \`${String(saved.id).slice(0, 8)}\``,
+  ].filter(Boolean).join('\n');
+
+  try {
+    await supabase.functions.invoke('send-telegram', {
+      body: {
+        action: 'send',
+        bot_token: settings.telegram_bot_token,
+        chat_id: settings.telegram_chat_id,
+        message,
+      },
+    });
+  } catch (err) {
+    console.error(`[Telegram] Failed to send alert for ${saved.instrument}:`, err);
+  }
+}
 const DERIV_WS_URLS = [
   'wss://api.derivws.com/trading/v1/options/ws/public',
   `wss://ws.derivws.com/websockets/v3?app_id=${DERIV_APP_ID}`,
@@ -1467,7 +1533,7 @@ Deno.serve(async (req) => {
               .eq('id', cancelId);
           }
 
-          const { error: saveErr } = await supabase
+          const { data: savedSignal, error: saveErr } = await supabase
             .from('generated_signals')
             .insert({
               user_id: settings.user_id,
@@ -1501,6 +1567,11 @@ Deno.serve(async (req) => {
           if (saveErr) { errors.push(`${instrument}: Save failed - ${saveErr.message}`); continue; }
           
           totalSignals++;
+
+          // Respect each user's own notify_min_confidence threshold for Telegram alerts.
+          if (savedSignal && signal.confidence >= (settings.notify_min_confidence ?? 70)) {
+            await sendTelegramSignalAlert(supabase, settings, savedSignal);
+          }
           
           await supabase.from('daily_performance').upsert({
             user_id: settings.user_id,
