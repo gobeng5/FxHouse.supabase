@@ -14,15 +14,24 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: corsHeaders });
     }
 
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_ANON_KEY')!,
-      { global: { headers: { Authorization: authHeader } } }
-    );
+    // Trusted server-to-server calls (e.g. signal-engine's cron job) present the
+    // project's own service role key. There's no end-user session in that context,
+    // so we skip auth.getUser() and trust the key itself — it's never exposed
+    // publicly and only ever lives in Supabase secrets / cron job SQL.
+    const token = authHeader.replace('Bearer ', '');
+    const isServiceRoleCall = token === Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: corsHeaders });
+    if (!isServiceRoleCall) {
+      const supabase = createClient(
+        Deno.env.get('SUPABASE_URL')!,
+        Deno.env.get('SUPABASE_ANON_KEY')!,
+        { global: { headers: { Authorization: authHeader } } }
+      );
+
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: corsHeaders });
+      }
     }
 
     const body = await req.json();
