@@ -1,6 +1,9 @@
 import { analyzeMarket } from '../_shared/analysis/marketAnalysis.ts';
+import type { AnalysisResult } from '../_shared/analysis/marketAnalysis.ts';
 import { computeSwingConfidence } from '../_shared/analysis/swingConfidence.ts';
-import type { TradingInstrument } from '../_shared/analysis/core.ts';
+import type { TradingInstrument, TrendDirection } from '../_shared/analysis/core.ts';
+import { findOrderBlocks as findOrderBlocksShared, findFairValueGaps as findFairValueGapsShared, analyzeAsianSession } from '../_shared/analysis/smcAnalysis.ts';
+import type { OrderBlock, FairValueGap } from '../_shared/analysis/smcAnalysis.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 
 const corsHeaders = {
@@ -1035,6 +1038,175 @@ function generateSignal(
   };
 }
 
+// Faithful port of src/lib/tradeSignalGenerator.ts's generateDayTradeRecommendation,
+// operating on the same shared AnalysisResult the swing path already uses.
+// Output shape matches generateSignal() above so both flow through the same
+// arbitration/insert/Telegram pipeline at the call site.
+function generateDaySignal(
+  instrument: TradingInstrument,
+  dailyCandles: CandleData[],
+  fourHourCandles: CandleData[],
+  fifteenMinCandles: CandleData[],
+  oneHourCandles: CandleData[],
+) {
+  if (fifteenMinCandles.length < 20 || oneHourCandles.length < 20) return null;
+
+  const analysis: AnalysisResult = analyzeMarket(
+    dailyCandles.slice(0, -1), fourHourCandles.slice(0, -1), oneHourCandles.slice(0, -1), instrument,
+  );
+
+  const isSynth = isSyntheticIndex(instrument);
+  const decimals = getDecimals(instrument);
+  const currentPrice = fourHourCandles[fourHourCandles.length - 1].close;
+  // No live tick subscription server-side (unlike the client's WebSocket feed) —
+  // the freshest price available is the latest closed 15m candle.
+  const livePrice = fifteenMinCandles[fifteenMinCandles.length - 1].close;
+
+  const sessionAnalysis = analyzeAsianSession(fourHourCandles, currentPrice);
+  const atrPercentile = computeAtrPercentile(fifteenMinCandles, 14, 200);
+  const oneHourOrderBlocks: OrderBlock[] = findOrderBlocksShared(fifteenMinCandles, '1H');
+  const oneHourFVGs: FairValueGap[] = findFairValueGapsShared(fifteenMinCandles, '1H');
+
+  let dayDirection: TrendDirection = analysis.oneHourStructure.trend;
+  if (dayDirection === 'ranging') dayDirection = analysis.fourHourStructure.trend;
+
+  let gateReason: string | null = null;
+
+  if (dayDirection !== 'ranging') {
+    const hasBOS1H = analysis.oneHourStructure.breakOfStructure === dayDirection;
+    const hasCHoCH1H = analysis.oneHourStructure.changeOfCharacter === dayDirection;
+    const sweepConfirms = dayDirection === 'bearish' ? 'bullish' : 'bearish';
+    const hasSweep = analysis.liquiditySweep4H.detected && analysis.liquiditySweep4H.direction === sweepConfirms;
+    const tfAligned = analysis.oneHourStructure.trend === dayDirection &&
+                      analysis.fourHourStructure.trend === dayDirection;
+
+    if (!hasBOS1H && !hasCHoCH1H && !hasSweep && !tfAligned) {
+      gateReason = `No 1H structural confirmation for ${dayDirection}`;
+      dayDirection = 'ranging';
+    }
+  }
+
+  const zoneProximity = analysis.oneHourATR * 1.0;
+  const nearZone = (low: number, high: number) =>
+    currentPrice >= low - zoneProximity && currentPrice <= high + zoneProximity;
+  const dayOBs = oneHourOrderBlocks.length ? oneHourOrderBlocks : analysis.orderBlocks;
+  const dayFVGs = oneHourFVGs.length ? oneHourFVGs : analysis.fairValueGaps;
+
+  const qualifyingOB = (dir: TrendDirection) =>
+    dayOBs.find(ob => ob.type === dir && !ob.mitigated && ob.qualityScore >= 30 && nearZone(ob.low, ob.high)) ?? null;
+  const qualifyingFVG = (dir: TrendDirection) =>
+    dayFVGs.find(fvg => fvg.type === dir && fvg.qualityScore >= 30 && nearZone(fvg.low, fvg.high)) ?? null;
+
+  if (dayDirection !== 'ranging') {
+    if (!qualifyingOB(dayDirection) && !qualifyingFVG(dayDirection)) {
+      gateReason = `No unmitigated 1H OB/FVG (quality >= 30) within 1x 1H ATR for ${dayDirection}`;
+      dayDirection = 'ranging';
+    }
+  }
+
+  if (gateReason || dayDirection === 'ranging') return null;
+
+  // --- Confluence score (12 pts), mirroring the client exactly ---
+  let dayScore = 0;
+  const tfAlign = analysis.oneHourStructure.trend === analysis.fourHourStructure.trend ? 3 : 0;
+  dayScore += tfAlign;
+
+  const bosCHoCH = analysis.oneHourStructure.breakOfStructure === dayDirection ||
+                   analysis.oneHourStructure.changeOfCharacter === dayDirection;
+  const sweepDir = dayDirection === 'bearish' ? 'bullish' : 'bearish';
+  const sweepConfirm = analysis.liquiditySweep4H.detected && analysis.liquiditySweep4H.direction === sweepDir;
+  dayScore += (bosCHoCH || sweepConfirm) ? 1 : 0;
+
+  const paMatch = analysis.oneHourPriceAction.dominantSignal === dayDirection ? 2 : 0;
+  dayScore += paMatch;
+
+  let rsi1HScore = 0, rsi4hScore = 0;
+  if (dayDirection === 'bullish') {
+    if (analysis.oneHourRSI > 40 && analysis.oneHourRSI < 70) rsi1HScore = 1;
+    if (analysis.fourHourRSI > 40 && analysis.fourHourRSI < 70) rsi4hScore = 1;
+  } else {
+    if (analysis.oneHourRSI > 30 && analysis.oneHourRSI < 60) rsi1HScore = 1;
+    if (analysis.fourHourRSI > 30 && analysis.fourHourRSI < 60) rsi4hScore = 1;
+  }
+  dayScore += rsi1HScore + rsi4hScore;
+
+  const gateOB = qualifyingOB(dayDirection);
+  const gateFVG = qualifyingFVG(dayDirection);
+  dayScore += gateOB ? (gateOB.qualityScore >= 60 ? 2 : 1) : 0;
+  dayScore += gateFVG ? (gateFVG.qualityScore >= 60 ? 2 : 1) : 0;
+
+  const dayConfidence = Math.min(Math.round((dayScore / 12) * 100), 95);
+
+  // --- Risk geometry ---
+  const dayAtr = analysis.oneHourATR;
+  const atrTp1Mult = isSynth ? 1.0 : 1.5;
+  const atrTp2Mult = isSynth ? 1.8 : 2.5;
+  const atrTp3Mult = isSynth ? 2.8 : 4.0;
+
+  const execPrice = livePrice && livePrice > 0 ? livePrice : currentPrice;
+  const entryDriftAtr = dayAtr > 0 ? Math.abs(execPrice - currentPrice) / dayAtr : 0;
+  const entryStale = entryDriftAtr > 0.5;
+  const dayEntry = execPrice;
+
+  const daySpreadForFloor = getVolatilityAdjustedSpread(instrument, atrPercentile);
+  const dayMinStopDist = isSynth ? daySpreadForFloor * 8 : 0;
+
+  let dayStopLoss: number, dayTp1: number, dayTp2: number, dayTp3: number;
+
+  if (dayDirection === 'bullish') {
+    const asianStop = sessionAnalysis.asianLow - (dayAtr * 0.5);
+    const atrStop = execPrice - (dayAtr * 1.5);
+    dayStopLoss = Math.max(asianStop, atrStop);
+    if (dayEntry - dayStopLoss < dayMinStopDist) dayStopLoss = dayEntry - dayMinStopDist;
+    const dayRisk = dayEntry - dayStopLoss;
+    dayTp1 = dayEntry + (dayRisk * atrTp1Mult);
+    dayTp2 = dayEntry + (dayRisk * atrTp2Mult);
+    dayTp3 = dayEntry + (dayRisk * atrTp3Mult);
+  } else {
+    const asianStop = sessionAnalysis.asianHigh + (dayAtr * 0.5);
+    const atrStop = execPrice + (dayAtr * 1.5);
+    dayStopLoss = Math.min(asianStop, atrStop);
+    if (dayStopLoss - dayEntry < dayMinStopDist) dayStopLoss = dayEntry + dayMinStopDist;
+    const dayRisk = dayStopLoss - dayEntry;
+    dayTp1 = dayEntry - (dayRisk * atrTp1Mult);
+    dayTp2 = dayEntry - (dayRisk * atrTp2Mult);
+    dayTp3 = dayEntry - (dayRisk * atrTp3Mult);
+  }
+
+  // Stale entries (live price drifted too far from the structural read) are
+  // suppressed rather than shipped — matches the client's safety behavior.
+  if (entryStale) return null;
+
+  const daySpread = getVolatilityAdjustedSpread(instrument, atrPercentile);
+  const daySpreadMultiplier = appliedSpreadMultiplier(instrument, atrPercentile);
+  const dayEffectiveEntry = effectiveEntryWithSpread(dayDirection as 'bullish' | 'bearish', dayEntry, daySpread);
+
+  const setupType = analysis.oneHourStructure.structureBreak ? 'breakout' :
+    analysis.oneHourStructure.trend === analysis.fourHourStructure.trend ? 'trend_continuation' : 'range';
+
+  const reasoning = `⚡ Day trade: 1H ${analysis.oneHourStructure.trend} structure, ${dayDirection} bias. ` +
+    `${analysis.oneHourPriceAction.candlestickPatterns.length > 0 ? analysis.oneHourPriceAction.candlestickPatterns[0].name + ' pattern. ' : ''}` +
+    `Asian session ${sessionAnalysis.volatility} volatility. RSI 1H ${analysis.oneHourRSI.toFixed(1)}, 4H ${analysis.fourHourRSI.toFixed(1)}.`;
+
+  return {
+    instrument, direction: dayDirection as 'bullish' | 'bearish',
+    entry_price: Number(dayEntry.toFixed(decimals)),
+    effective_entry: Number(dayEffectiveEntry.toFixed(decimals + 1)),
+    spread_applied: daySpread,
+    atr_percentile_at_entry: atrPercentile !== null ? Number(atrPercentile.toFixed(1)) : null,
+    spread_multiplier_applied: daySpreadMultiplier,
+    stop_loss: Number(dayStopLoss.toFixed(decimals)),
+    take_profit_1: Number(dayTp1.toFixed(decimals)),
+    take_profit_2: Number(dayTp2.toFixed(decimals)),
+    take_profit_3: Number(dayTp3.toFixed(decimals)),
+    risk_reward_ratio: Number((Math.abs(dayTp2 - dayEntry) / Math.abs(dayEntry - dayStopLoss)).toFixed(2)),
+    confidence: dayConfidence, trade_type: 'day' as const, setup_type: setupType, reasoning,
+    confluence_breakdown: [],
+    confluence_score_total: dayScore,
+    confluence_score_max: 12,
+  };
+}
+
 // =================== INTRABAR (WICK) RESOLUTION ===================
 // Mirror of src/lib/intrabarResolution.ts — path assumption:
 //   bullish candle (close >= open): open -> low  -> high -> close
@@ -1494,93 +1666,99 @@ Deno.serve(async (req) => {
             continue;
           }
           
-          const signal = generateSignal(instrument, daily, fourHour, fifteenMin, oneHour, {
+          const swingSignal = generateSignal(instrument, daily, fourHour, fifteenMin, oneHour, {
             forex_min_rr: settings.forex_min_rr,
             synthetic_min_rr: settings.synthetic_min_rr,
             ignore_counter_trend: settings.ignore_counter_trend,
           });
+          const daySignal = generateDaySignal(instrument, daily, fourHour, fifteenMin, oneHour);
 
-          if (!signal) continue;
-          if (signal.confidence < settings.notify_min_confidence) continue;
+          // Process both candidates through the same arbitration/insert/Telegram
+          // pipeline. Each is independent — a block or failure on one does not
+          // stop the other from being attempted.
+          for (const signal of [swingSignal, daySignal]) {
+            if (!signal) continue;
+            if (signal.confidence < settings.notify_min_confidence) continue;
 
-          // ---- Unified arbitration: the Postgres function is the single source of truth ----
-          // Fail closed: any error, missing verdict, or unexpected shape blocks the signal.
-          const { data: verdict, error: arbErr } = await supabase.rpc('arbitrate_signal', {
-            p_user_id: settings.user_id,
-            p_instrument: signal.instrument,
-            p_direction: signal.direction,
-            p_trade_type: signal.trade_type,
-            p_confidence: Math.round(signal.confidence),
-          });
+            // ---- Unified arbitration: the Postgres function is the single source of truth ----
+            // Fail closed: any error, missing verdict, or unexpected shape blocks the signal.
+            const { data: verdict, error: arbErr } = await supabase.rpc('arbitrate_signal', {
+              p_user_id: settings.user_id,
+              p_instrument: signal.instrument,
+              p_direction: signal.direction,
+              p_trade_type: signal.trade_type,
+              p_confidence: Math.round(signal.confidence),
+            });
 
-          if (arbErr || !verdict || typeof verdict.allowed !== 'boolean') {
-            errors.push(`${instrument}: arbitration unavailable — signal blocked (fail-closed)${arbErr ? `: ${arbErr.message}` : ''}`);
-            continue;
-          }
+            if (arbErr || !verdict || typeof verdict.allowed !== 'boolean') {
+              errors.push(`${instrument} (${signal.trade_type}): arbitration unavailable — signal blocked (fail-closed)${arbErr ? `: ${arbErr.message}` : ''}`);
+              continue;
+            }
 
-          if (!verdict.allowed) {
-            console.log(`[Arbiter] Blocked ${signal.direction} ${signal.trade_type} ${instrument}: ${verdict.reason}`);
-            continue;
-          }
+            if (!verdict.allowed) {
+              console.log(`[Arbiter] Blocked ${signal.direction} ${signal.trade_type} ${instrument}: ${verdict.reason}`);
+              continue;
+            }
 
-          for (const cancelId of (verdict.cancel_ids ?? []) as string[]) {
-            await supabase.from('generated_signals')
-              .update({
-                outcome: 'cancelled',
-                closed_at: new Date().toISOString(),
-                notes: `Auto-cancelled by arbiter: ${verdict.reason}`,
+            for (const cancelId of (verdict.cancel_ids ?? []) as string[]) {
+              await supabase.from('generated_signals')
+                .update({
+                  outcome: 'cancelled',
+                  closed_at: new Date().toISOString(),
+                  notes: `Auto-cancelled by arbiter: ${verdict.reason}`,
+                })
+                .eq('id', cancelId);
+            }
+
+            const { data: savedSignal, error: saveErr } = await supabase
+              .from('generated_signals')
+              .insert({
+                user_id: settings.user_id,
+                instrument: signal.instrument,
+                direction: signal.direction,
+                trade_type: signal.trade_type,
+                confidence: signal.confidence,
+                setup_type: signal.setup_type,
+                entry_price: signal.entry_price,
+                effective_entry: signal.effective_entry,
+                spread_applied: signal.spread_applied,
+                atr_percentile_at_entry: signal.atr_percentile_at_entry,
+                spread_multiplier_applied: signal.spread_multiplier_applied,
+
+                stop_loss: signal.stop_loss,
+                take_profit_1: signal.take_profit_1,
+                take_profit_2: signal.take_profit_2,
+                take_profit_3: signal.take_profit_3,
+                risk_reward_ratio: signal.risk_reward_ratio,
+                reasoning: signal.reasoning,
+                confluence_breakdown: signal.confluence_breakdown,
+                confluence_score_total: signal.confluence_score_total,
+                confluence_score_max: signal.confluence_score_max,
+                outcome: 'pending',
+                engine_generated: true,
+                session: new Date().getUTCHours() < 7 ? 'Asian' : new Date().getUTCHours() < 12 ? 'London' : new Date().getUTCHours() < 17 ? 'London/NY' : 'New York',
               })
-              .eq('id', cancelId);
-          }
+              .select()
+              .single();
 
-          const { data: savedSignal, error: saveErr } = await supabase
-            .from('generated_signals')
-            .insert({
+            if (saveErr) { errors.push(`${instrument} (${signal.trade_type}): Save failed - ${saveErr.message}`); continue; }
+
+            totalSignals++;
+
+            // Respect each user's own notify_min_confidence threshold for Telegram alerts.
+            if (savedSignal && signal.confidence >= (settings.notify_min_confidence ?? 70)) {
+              await sendTelegramSignalAlert(supabase, settings, savedSignal);
+            }
+
+            await supabase.from('daily_performance').upsert({
               user_id: settings.user_id,
-              instrument: signal.instrument,
-              direction: signal.direction,
-              trade_type: signal.trade_type,
-              confidence: signal.confidence,
-              setup_type: signal.setup_type,
-              entry_price: signal.entry_price,
-              effective_entry: signal.effective_entry,
-              spread_applied: signal.spread_applied,
-              atr_percentile_at_entry: signal.atr_percentile_at_entry,
-              spread_multiplier_applied: signal.spread_multiplier_applied,
+              trade_date: today,
+              signals_generated: (dailyPerf?.signals_generated || 0) + 1,
+            }, { onConflict: 'user_id,trade_date' });
 
-              stop_loss: signal.stop_loss,
-              take_profit_1: signal.take_profit_1,
-              take_profit_2: signal.take_profit_2,
-              take_profit_3: signal.take_profit_3,
-              risk_reward_ratio: signal.risk_reward_ratio,
-              reasoning: signal.reasoning,
-              confluence_breakdown: signal.confluence_breakdown,
-              confluence_score_total: signal.confluence_score_total,
-              confluence_score_max: signal.confluence_score_max,
-              outcome: 'pending',
-              engine_generated: true,
-              session: new Date().getUTCHours() < 7 ? 'Asian' : new Date().getUTCHours() < 12 ? 'London' : new Date().getUTCHours() < 17 ? 'London/NY' : 'New York',
-            })
-            .select()
-            .single();
-          
-          if (saveErr) { errors.push(`${instrument}: Save failed - ${saveErr.message}`); continue; }
-          
-          totalSignals++;
-
-          // Respect each user's own notify_min_confidence threshold for Telegram alerts.
-          if (savedSignal && signal.confidence >= (settings.notify_min_confidence ?? 70)) {
-            await sendTelegramSignalAlert(supabase, settings, savedSignal);
+            await new Promise(r => setTimeout(r, 500));
           }
-          
-          await supabase.from('daily_performance').upsert({
-            user_id: settings.user_id,
-            trade_date: today,
-            signals_generated: (dailyPerf?.signals_generated || 0) + 1,
-          }, { onConflict: 'user_id,trade_date' });
-          
-          await new Promise(r => setTimeout(r, 500));
-          
+
         } catch (err) {
           errors.push(`${instrument}: ${err instanceof Error ? err.message : 'Unknown error'}`);
         }
