@@ -7,11 +7,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { RequireAuth } from "@/components/RequireAuth";
+import { RequireAdmin } from "@/components/RequireAdmin";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import TradeJournal from "./pages/TradeJournal";
 import SignalHistory from "./pages/SignalHistory";
 import Install from "./pages/Install";
+import AdminAITeam from "./pages/AdminAITeam";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -54,6 +56,14 @@ const App = () => {
               }
             />
             <Route path="/install" element={<Install />} />
+            <Route
+              path="/admin/ai-team"
+              element={
+                <RequireAdmin>
+                  <AdminAITeam />
+                </RequireAdmin>
+              }
+            />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
