@@ -1,9 +1,10 @@
-import { Clock, Shield, Zap, WifiOff, BookOpen, LogOut, User, History, BarChart3, Menu } from 'lucide-react';
+import { Clock, Shield, Zap, WifiOff, BookOpen, LogOut, User, History, BarChart3, Menu, Bot } from 'lucide-react';
 import appIcon from '@/assets/app-icon.png';
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/useAuth';
+import { useIsAdmin } from '@/hooks/useIsAdmin';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -17,6 +18,7 @@ interface HeaderProps {
 export const Header = ({ isConnected = false, error, isMarketClosed = false }: HeaderProps) => {
   const [time, setTime] = useState(new Date());
   const { user, signOut } = useAuth();
+  const { isAdmin } = useIsAdmin();
   const location = useLocation();
 
   useEffect(() => {
@@ -92,6 +94,18 @@ export const Header = ({ isConnected = false, error, isMarketClosed = false }: H
                 Signals
               </Button>
             </Link>
+            {isAdmin && (
+              <Link to="/admin/ai-team">
+                <Button 
+                  variant={location.pathname === '/admin/ai-team' ? 'secondary' : 'ghost'} 
+                  size="sm"
+                  className="gap-2"
+                >
+                  <Bot className="w-4 h-4" />
+                  AI Team
+                </Button>
+              </Link>
+            )}
           </nav>
           
           {/* Connection Status */}
@@ -170,6 +184,14 @@ export const Header = ({ isConnected = false, error, isMarketClosed = false }: H
                     Signal History
                   </Link>
                 </DropdownMenuItem>
+                {isAdmin && (
+                  <DropdownMenuItem asChild>
+                    <Link to="/admin/ai-team" className="flex items-center gap-2">
+                      <Bot className="w-4 h-4" />
+                      AI Team
+                    </Link>
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>

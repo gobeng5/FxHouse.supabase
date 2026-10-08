@@ -5,6 +5,23 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// The function spends DeepSeek credits and sends a Telegram digest, so it only
+// runs for: the scheduled job (shared secret), service-role callers, or a
+// signed-in admin user.
+async function isAuthorized(req: Request, supabase: ReturnType<typeof createClient>): Promise<boolean> {
+  const cronSecret = Deno.env.get('AI_EMPLOYEES_CRON_SECRET');
+  if (cronSecret && req.headers.get('x-cron-secret') === cronSecret) return true;
+
+  const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+  if (!token) return false;
+  if (token === Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) return true;
+
+  const { data: { user } } = await supabase.auth.getUser(token);
+  if (!user) return false;
+  const { data } = await supabase.from('user_settings').select('is_admin').eq('user_id', user.id).maybeSingle();
+  return data?.is_admin === true;
+}
+
 // --- DeepSeek ---
 // Model names deepseek-chat / deepseek-reasoner are being retired; use the
 // current v4 family. Flash is the fast/cheap tier — the right fit for
@@ -12,30 +29,44 @@ const corsHeaders = {
 // if this model id ever starts erroring as deprecated.
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
+// Throws instead of returning a placeholder: a missing key or an empty reply
+// must surface as an 'error' desk, never as a finished report.
 async function callDeepSeek(systemPrompt: string, userPrompt: string): Promise<string> {
   const apiKey = Deno.env.get('DEEPSEEK_API_KEY');
-  if (!apiKey) return '(DeepSeek API key not configured — set DEEPSEEK_API_KEY as a Supabase secret.)';
+  if (!apiKey) throw new Error('DEEPSEEK_API_KEY is not configured — set it as a Supabase secret.');
 
-  const res = await fetch('https://api.deepseek.com/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: DEEPSEEK_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.4,
-      max_tokens: 600,
-    }),
-  });
+  let maxTokens = 600;
+  let finishReason = 'unknown';
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`DeepSeek API error ${res.status}: ${text.slice(0, 300)}`);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const res = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.4,
+        max_tokens: maxTokens,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`DeepSeek API error ${res.status}: ${text.slice(0, 300)}`);
+    }
+    const data = await res.json();
+    const content = (data.choices?.[0]?.message?.content ?? '').trim();
+    if (content) return content;
+
+    // An empty reply cut off by the token limit gets one retry with more room.
+    finishReason = data.choices?.[0]?.finish_reason ?? 'unknown';
+    if (finishReason === 'length') maxTokens *= 2;
   }
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content ?? '(no response)';
+
+  throw new Error(`DeepSeek returned an empty reply (finish_reason: ${finishReason}).`);
 }
 
 // --- Desk/log helpers ---
@@ -69,15 +100,19 @@ async function runKofi(supabase: ReturnType<typeof createClient>) {
     const noRls = (rlsRows ?? []).filter((r: any) => !r.rls_enabled);
     const noPolicies = (rlsRows ?? []).filter((r: any) => r.rls_enabled && Number(r.policy_count) === 0);
 
-    const { data: httpRows } = await supabase.rpc('recent_telegram_http_responses', { lookback_minutes: 180 });
+    // Despite its name, this RPC reads pg_net's response log: the scheduled
+    // calls from the database to the edge functions, not Telegram sends.
+    // Telegram delivery is Ama's check (generated_signals.telegram_status).
+    const { data: httpRows, error: httpErr } = await supabase.rpc('recent_telegram_http_responses', { lookback_minutes: 180 });
     const failed = (httpRows ?? []).filter((r: any) => r.status_code && r.status_code >= 400);
     const timedOut = (httpRows ?? []).filter((r: any) => r.timed_out);
 
     const facts = [
       `Tables with RLS disabled: ${noRls.length ? noRls.map((r: any) => r.table_name).join(', ') : 'none'}`,
       `Tables with RLS enabled but zero policies (effectively locked to everyone, including owners via PostgREST): ${noPolicies.length ? noPolicies.map((r: any) => r.table_name).join(', ') : 'none'}`,
-      `HTTP calls in the last 3h with a 4xx/5xx status: ${failed.length}`,
-      `HTTP calls in the last 3h that timed out: ${timedOut.length}`,
+      httpErr
+        ? `Scheduled calls to the edge functions: log unavailable (${httpErr.message})`
+        : `Scheduled calls to the edge functions in the last 3h: ${httpRows?.length ?? 0} logged, ${failed.length} with a 4xx/5xx status, ${timedOut.length} timed out`,
     ].join('\n');
 
     const report = await callDeepSeek(
@@ -94,45 +129,104 @@ async function runKofi(supabase: ReturnType<typeof createClient>) {
 async function runAma(supabase: ReturnType<typeof createClient>) {
   const task = 'Signal & Telegram QA';
   await setWorking(supabase, 'ama', task);
+
   try {
     const since = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+
     const { data: signals, error: sigErr } = await supabase
       .from('generated_signals')
-      .select('instrument, trade_type, engine_generated, created_at')
+      .select(
+        'id, instrument, trade_type, engine_generated, created_at, telegram_status, telegram_message_id, telegram_error'
+      )
       .gte('created_at', since)
       .eq('engine_generated', true);
+
     if (sigErr) throw sigErr;
 
-    const FOREX = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'GBP/JPY', 'XAU/USD'];
-    const weekendForexLeaks = (signals ?? []).filter(s => {
+    const FOREX = [
+      'EUR/USD',
+      'GBP/USD',
+      'USD/JPY',
+      'AUD/USD',
+      'GBP/JPY',
+      'XAU/USD',
+    ];
+
+    const weekendForexLeaks = (signals ?? []).filter((s: any) => {
       if (!FOREX.includes(s.instrument)) return false;
+
       const d = new Date(s.created_at);
-      const day = d.getUTCDay(), hour = d.getUTCHours();
-      return day === 6 || (day === 0 && hour < 22) || (day === 5 && hour >= 22);
+      const day = d.getUTCDay();
+      const hour = d.getUTCHours();
+
+      return (
+        day === 6 ||
+        (day === 0 && hour < 22) ||
+        (day === 5 && hour >= 22)
+      );
     });
 
-    const { data: httpRows } = await supabase.rpc('recent_telegram_http_responses', { lookback_minutes: 360 });
-    const telegramErrors = (httpRows ?? []).filter((r: any) => r.status_code && r.status_code >= 400);
+    const sent = (signals ?? []).filter(
+      (s: any) =>
+        s.telegram_status === 'sent' &&
+        s.telegram_message_id != null
+    );
+
+    const failed = (signals ?? []).filter(
+      (s: any) => s.telegram_status === 'failed'
+    );
+
+    const skipped = (signals ?? []).filter(
+      (s: any) => s.telegram_status === 'skipped'
+    );
+
+    const notAttempted = (signals ?? []).filter(
+      (s: any) => !s.telegram_status
+    );
+
+    const deliveryRate =
+      signals && signals.length > 0
+        ? ((sent.length / signals.length) * 100).toFixed(1)
+        : '0.0';
+
+    const failureDetails = failed
+      .slice(0, 5)
+      .map(
+        (s: any) =>
+          `${s.instrument}: ${s.telegram_error || 'unknown Telegram error'}`
+      )
+      .join('; ');
 
     const facts = [
-      `Engine-generated signals in the last 6h: ${signals?.length ?? 0} (swing + day combined)`,
-      `Forex/XAU signals that fell inside market-closed hours (should be zero after the weekend fix): ${weekendForexLeaks.length}`,
-      `HTTP errors in the last 6h on calls that look like Telegram delivery: ${telegramErrors.length}`,
+      `Engine-generated signals in the last 6h: ${signals?.length ?? 0}`,
+      `Confirmed Telegram deliveries (message_id present): ${sent.length}`,
+      `Telegram delivery failures: ${failed.length}`,
+      `Telegram skipped: ${skipped.length}`,
+      `Signals with no Telegram telemetry: ${notAttempted.length}`,
+      `Confirmed Telegram delivery rate: ${deliveryRate}%`,
+      `Forex/XAU signals inside market-closed hours: ${weekendForexLeaks.length}`,
+      failureDetails
+        ? `Recent Telegram failures: ${failureDetails}`
+        : 'Recent Telegram failures: none',
     ].join('\n');
 
     const report = await callDeepSeek(
-      'You are Ama, QA for a trading-signal engine. Your job is confirming signals are actually being generated and actually reaching Telegram — not just that the cron "succeeded". Under 120 words, plain, no filler.',
-      `Here is what I checked:\n${facts}\n\nWrite the report. If weekendForexLeaks > 0, that is a regression and should be flagged clearly as the headline.`,
+      'You are Ama, QA for a trading-signal engine. Confirm that signals are actually reaching Telegram using the delivery telemetry, not merely that the cron or function succeeded. Under 120 words, plain text, no filler. Clearly distinguish confirmed deliveries from failures, skipped signals, and signals with no telemetry. If weekendForexLeaks > 0, make that the headline regression.',
+      `Here is what I checked:\n${facts}\n\nWrite the report. Do not claim a Telegram delivery is confirmed unless telegram_status is "sent" AND telegram_message_id is present.`,
     );
+
     await setDone(supabase, 'ama', task, report);
   } catch (err) {
-    await setError(supabase, 'ama', task, err instanceof Error ? err.message : 'Unknown error');
+    await setError(
+      supabase,
+      'ama',
+      task,
+      err instanceof Error ? err.message : 'Unknown error'
+    );
   }
 }
-
-// --- Yaw: market behavior shifts, grounded in real computed stats ---
 async function runYaw(supabase: ReturnType<typeof createClient>) {
-  const task = 'Volatility & spike-rate review';
+  const task = 'Volatility review';
   await setWorking(supabase, 'yaw', task);
   try {
     const recentSince = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
@@ -187,7 +281,7 @@ async function runKobby(supabase: ReturnType<typeof createClient>) {
   try {
     const finnhubKey = Deno.env.get('FINNHUB_API_KEY');
     if (!finnhubKey) {
-      await setDone(supabase, 'kobby', task, 'No economic calendar API key configured yet (FINNHUB_API_KEY). Sign up for a free Finnhub account and add the key as a Supabase secret to turn this on.');
+      await setError(supabase, 'kobby', task, 'Not running: no economic calendar API key (FINNHUB_API_KEY). Add a Finnhub key as a Supabase secret to turn this on.');
       return;
     }
 
@@ -234,18 +328,28 @@ async function runBoss(supabase: ReturnType<typeof createClient>, settings: { us
       'You are the Boss, summarizing four employees\' reports into one digest for the human owner of this trading app. Be concise — under 150 words total. Lead with anything that needs attention (errors, regressions, high-impact news); routine all-clear items get one short line each.',
       `Today's reports:\n\n${facts}\n\nWrite the digest.`,
     );
-    await setDone(supabase, 'boss', task, digest);
 
+    // send-telegram posts as Markdown; model output with stray * _ ` [ ] makes
+    // Telegram reject the whole message, so the digest body goes out plain.
+    let delivery = 'Telegram: not sent (Telegram is disabled or not configured).';
     if (settings?.telegram_enabled && settings.telegram_bot_token && settings.telegram_chat_id) {
-      await supabase.functions.invoke('send-telegram', {
+      const { data, error } = await supabase.functions.invoke('send-telegram', {
         body: {
           action: 'send',
           bot_token: settings.telegram_bot_token,
           chat_id: settings.telegram_chat_id,
-          message: `🏢 *AI Team Daily Digest*\n\n${digest}`,
+          message: `🏢 *AI Team Daily Digest*\n\n${digest.replace(/[_*`\[\]]/g, '')}`,
         },
       });
+      if (error || !data?.success) {
+        const reason = data?.error ?? error?.message ?? 'unknown error';
+        await setError(supabase, 'boss', task, `${digest}\n\nTelegram: delivery FAILED — ${reason}`);
+        return;
+      }
+      delivery = `Telegram: delivered (message ${data.message_id ?? 'id unknown'}).`;
     }
+
+    await setDone(supabase, 'boss', task, `${digest}\n\n${delivery}`);
   } catch (err) {
     await setError(supabase, 'boss', task, err instanceof Error ? err.message : 'Unknown error');
   }
@@ -260,12 +364,18 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
+    if (!(await isAuthorized(req, supabase))) {
+      return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
+        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     const body = await req.json().catch(() => ({}));
     const employee = body.employee as string | undefined;
 
-    // Boss needs telegram settings to deliver the digest — reuse the first
-    // admin user's settings (single-user app today; revisit if multi-tenant).
-    const { data: settingsRows } = await supabase.from('user_settings').select('*').limit(1);
+    // Boss needs telegram settings to deliver the digest — the admin's own
+    // settings (single-admin app today; revisit if multi-tenant).
+    const { data: settingsRows } = await supabase.from('user_settings').select('*').eq('is_admin', true).limit(1);
     const settings = settingsRows?.[0] ?? null;
 
     if (employee === 'kofi') await runKofi(supabase);

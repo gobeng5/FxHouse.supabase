@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Header } from '@/components/Header';
+import { AIEmployeeAvatar } from '@/components/AIEmployeeAvatar';
 import { ShieldCheck, LineChart, Newspaper, ClipboardCheck, Briefcase, Loader2, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -39,6 +40,9 @@ const STATUS_STYLE: Record<Activity['status'], string> = {
   error: 'bg-red-500/15 text-red-500',
 };
 
+// Fallback refresh while a run is in flight, in case a realtime event is missed.
+const RUN_POLL_MS = 3000;
+
 function timeAgo(iso: string | null): string {
   if (!iso) return 'never';
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -46,6 +50,16 @@ function timeAgo(iso: string | null): string {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
+}
+
+function sceneCaption(activity: Activity | undefined): string {
+  const task = activity?.current_task;
+  switch (activity?.status) {
+    case 'working': return task ? `Working on: ${task}` : 'Working…';
+    case 'done': return `Report filed ${timeAgo(activity.updated_at)}`;
+    case 'error': return 'Hit a problem — see the report';
+    default: return 'Waiting for the next run';
+  }
 }
 
 function Desk({ employee, activity }: { employee: Employee; activity: Activity | undefined }) {
@@ -58,6 +72,10 @@ function Desk({ employee, activity }: { employee: Employee; activity: Activity |
       {status === 'working' && (
         <div className="absolute top-0 left-0 right-0 h-0.5 bg-amber-500 animate-pulse" />
       )}
+      <div className="flex items-center gap-3 bg-muted/30 border-b border-border/40 px-4 py-2">
+        <AIEmployeeAvatar status={status} accent={isBoss} className="h-20 w-28 shrink-0" />
+        <p className="text-xs text-muted-foreground">{sceneCaption(activity)}</p>
+      </div>
       <CardHeader className="flex flex-row items-center justify-between gap-3 pb-2">
         <div className="flex items-center gap-3">
           <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isBoss ? 'bg-primary/15 text-primary' : 'bg-muted text-foreground'}`}>
@@ -76,9 +94,6 @@ function Desk({ employee, activity }: { employee: Employee; activity: Activity |
       </CardHeader>
       <CardContent className="space-y-2">
         <p className="text-xs text-muted-foreground">{employee.description}</p>
-        {activity?.current_task && (
-          <p className="text-sm"><span className="text-muted-foreground">At desk: </span>{activity.current_task}</p>
-        )}
         {activity?.last_report && (
           <div className="rounded-md bg-muted/50 p-3 text-sm whitespace-pre-wrap">
             {activity.last_report}
@@ -115,15 +130,23 @@ export default function AdminAITeam() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(fetchAll, RUN_POLL_MS);
+    return () => clearInterval(id);
+  }, [running]);
+
   const runNow = async () => {
     setRunning(true);
+    toast.info('Team is on it — watch the desks.');
     try {
       const { error } = await supabase.functions.invoke('ai-employees', { body: {} });
       if (error) throw error;
-      toast.success('Team is on it — watch the desks update live.');
+      toast.success('Run finished — reports are in.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to start the team');
     } finally {
+      await fetchAll();
       setRunning(false);
     }
   };
@@ -146,7 +169,7 @@ export default function AdminAITeam() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold">AI Team</h1>
-            <p className="text-sm text-muted-foreground">They work automatically on a schedule — this is the floor.</p>
+            <p className="text-sm text-muted-foreground">Runs daily at 06:30 GMT, or on demand — this is the floor.</p>
           </div>
           <Button onClick={runNow} disabled={running} size="sm" variant="outline">
             {running ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}

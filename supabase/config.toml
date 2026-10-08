@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.send-telegram]
 verify_jwt = false
+
+[functions.ai-employees]
+verify_jwt = false

@@ -476,6 +476,75 @@
   }
 }
 
+/* AI Team avatars (src/components/AIEmployeeAvatar.tsx) */
+.ai-avatar .ai-person,
+.ai-avatar .ai-hand,
+.ai-avatar .ai-code-line,
+.ai-avatar .ai-alert,
+.ai-avatar .ai-zzz,
+.ai-avatar .ai-check {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ai-avatar .ai-delay-1 { animation-delay: 0.18s; }
+.ai-avatar .ai-delay-2 { animation-delay: 0.6s; }
+
+.ai-avatar--working .ai-person { animation: ai-bob 0.9s ease-in-out infinite; }
+.ai-avatar--working .ai-hand { animation: ai-type 0.36s ease-in-out infinite; }
+.ai-avatar--working .ai-code-line { transform-origin: left center; animation: ai-code 1.8s ease-in-out infinite; }
+
+.ai-avatar--idle .ai-person,
+.ai-avatar--done .ai-person { animation: ai-breathe 3.6s ease-in-out infinite; }
+.ai-avatar--idle .ai-zzz { animation: ai-zzz 2.4s ease-out infinite; }
+
+.ai-avatar--done .ai-check { stroke-dasharray: 28; animation: ai-draw 0.6s ease-out both; }
+
+.ai-avatar--error .ai-person { animation: ai-shake 2.4s ease-in-out infinite; }
+.ai-avatar--error .ai-alert { animation: gentle-pulse 1s ease-in-out infinite; }
+
+@keyframes ai-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(1.2px); }
+}
+
+@keyframes ai-type {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2.5px); }
+}
+
+@keyframes ai-code {
+  0% { transform: scaleX(0.1); opacity: 0.3; }
+  60%, 100% { transform: scaleX(1); opacity: 1; }
+}
+
+@keyframes ai-breathe {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(0.8px); }
+}
+
+@keyframes ai-zzz {
+  0% { transform: translate(0, 4px); opacity: 0; }
+  30% { opacity: 1; }
+  100% { transform: translate(4px, -6px); opacity: 0; }
+}
+
+@keyframes ai-draw {
+  from { stroke-dashoffset: 28; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes ai-shake {
+  0%, 84%, 100% { transform: translateX(0); }
+  88% { transform: translateX(-1.5px); }
+  92% { transform: translateX(1.5px); }
+  96% { transform: translateX(-1px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-avatar * { animation: none !important; }
+}
+
 /* Scrollbar - more subtle */
 ::-webkit-scrollbar {
   width: 8px;
