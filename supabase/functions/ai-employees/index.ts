@@ -125,23 +125,54 @@ async function runKofi(supabase: ReturnType<typeof createClient>) {
   }
 }
 
-// --- Ama: signal generation + Telegram delivery QA ---
-async function runAma(supabase: ReturnType<typeof createClient>) {
+// --- Ama: signal-engine job + Telegram delivery QA ---
+const AMA_LOOKBACK_HOURS = 24;
+
+type TelegramSettings = { telegram_enabled?: boolean; telegram_bot_token?: string; telegram_chat_id?: string } | null;
+
+// Sent straight away when Ama runs on her own and finds a problem, instead of
+// waiting for the next daily digest. Returns a line for her report.
+async function sendAmaAlert(supabase: ReturnType<typeof createClient>, settings: TelegramSettings, text: string): Promise<string> {
+  if (!settings?.telegram_enabled || !settings.telegram_bot_token || !settings.telegram_chat_id) {
+    return 'Alert: not sent (Telegram is disabled or not configured).';
+  }
+  const { data, error } = await supabase.functions.invoke('send-telegram', {
+    body: {
+      action: 'send',
+      bot_token: settings.telegram_bot_token,
+      chat_id: settings.telegram_chat_id,
+      message: `🚨 *Ama: signal pipeline problem*\n\n${text.replace(/[_*`\[\]]/g, '')}`,
+    },
+  });
+  if (error || !data?.success) return `Alert: Telegram delivery FAILED — ${data?.error ?? error?.message ?? 'unknown error'}`;
+  return `Alert: sent to Telegram (message ${data.message_id ?? 'id unknown'}).`;
+}
+
+/** `alertSettings` is set only for Ama-only runs; the full daily run reports through Boss's digest. */
+async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: TelegramSettings = null) {
   const task = 'Signal & Telegram QA';
   await setWorking(supabase, 'ama', task);
 
   try {
-    const since = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+    const since = new Date(Date.now() - AMA_LOOKBACK_HOURS * 3600 * 1000).toISOString();
 
     const { data: signals, error: sigErr } = await supabase
       .from('generated_signals')
       .select(
-        'id, instrument, trade_type, engine_generated, created_at, telegram_status, telegram_message_id, telegram_error'
+        'id, user_id, instrument, trade_type, confidence, engine_generated, created_at, telegram_status, telegram_message_id, telegram_error'
       )
       .gte('created_at', since)
       .eq('engine_generated', true);
 
     if (sigErr) throw sigErr;
+
+    const { data: settingsRows, error: setErr } = await supabase
+      .from('user_settings')
+      .select('user_id, telegram_enabled, telegram_bot_token, telegram_chat_id, notify_min_confidence');
+
+    if (setErr) throw setErr;
+
+    const settingsByUser = new Map((settingsRows ?? []).map((r: any) => [r.user_id, r]));
 
     const FOREX = [
       'EUR/USD',
@@ -166,63 +197,75 @@ async function runAma(supabase: ReturnType<typeof createClient>) {
       );
     });
 
-    const sent = (signals ?? []).filter(
-      (s: any) =>
-        s.telegram_status === 'sent' &&
-        s.telegram_message_id != null
-    );
+    const isSent = (s: any) => s.telegram_status === 'sent' && s.telegram_message_id != null;
 
-    const failed = (signals ?? []).filter(
-      (s: any) => s.telegram_status === 'failed'
-    );
+    // Mirrors the engine's own rule: alert when the user has Telegram set up
+    // and confidence >= their notify_min_confidence (default 70). Uses the
+    // CURRENT threshold, so a threshold changed inside the window can mislabel.
+    const telegramReady = (u: any) => !!(u?.telegram_enabled && u.telegram_bot_token && u.telegram_chat_id);
+    const meetsThreshold = (s: any) =>
+      Number(s.confidence) >= (settingsByUser.get(s.user_id)?.notify_min_confidence ?? 70);
 
-    const skipped = (signals ?? []).filter(
-      (s: any) => s.telegram_status === 'skipped'
-    );
+    const shouldPush = (signals ?? []).filter((s: any) => telegramReady(settingsByUser.get(s.user_id)) && meetsThreshold(s));
+    const pushed = shouldPush.filter(isSent);
+    const missed = shouldPush.filter((s: any) => !isSent(s));
+    const noTelegram = (signals ?? []).filter((s: any) => !telegramReady(settingsByUser.get(s.user_id)));
+    // The engine only saves signals at or above the threshold, so any here point to a changed threshold or a bug.
+    const belowThreshold = (signals ?? []).filter((s: any) => !meetsThreshold(s));
 
-    const notAttempted = (signals ?? []).filter(
-      (s: any) => !s.telegram_status
-    );
-
-    const deliveryRate =
-      signals && signals.length > 0
-        ? ((sent.length / signals.length) * 100).toFixed(1)
-        : '0.0';
-
-    const failureDetails = failed
+    const missedDetails = missed
       .slice(0, 5)
       .map(
         (s: any) =>
-          `${s.instrument}: ${s.telegram_error || 'unknown Telegram error'}`
+          `${s.instrument} ${s.trade_type} (confidence ${s.confidence}): ${s.telegram_status ?? 'no delivery record'}${s.telegram_error ? ` - ${s.telegram_error}` : ''}`
       )
       .join('; ');
 
+    const { data: cronRows, error: cronErr } = await supabase.rpc('signal_engine_cron_health');
+    const cron = cronRows?.[0];
+    const cronProblems = cron
+      ? cron.failed_24h + cron.http_timed_out + cron.http_failed + cron.http_missing + cron.http_with_errors
+      : 0;
+    const jobConcern = !!cronErr || !cron || !cron.job_active || cron.fired_24h < 23;
+    const problemCount = cronProblems + missed.length + weekendForexLeaks.length;
+    // Decided here from the counts, not by the model.
+    const hasProblem = jobConcern || problemCount > 0;
+
+    const cronFacts = cronErr || !cron
+      ? [`Hourly signal-engine job: health check unavailable (${cronErr?.message ?? 'no data'})`]
+      : [
+          `Hourly signal-engine job is ${cron.job_active ? 'active' : 'NOT ACTIVE'}`,
+          `Times the job fired in the last 24h: ${cron.fired_24h} of 24 expected, ${cron.failed_24h} failed to fire`,
+          `Last fired: ${cron.last_fired ?? 'never in the last 24h'}`,
+          `Engine answers for the ${cron.http_checked} most recent runs (only ~6h of answers are kept): ${cron.http_ok} completed, ${cron.http_with_errors} of those reported per-instrument errors, ${cron.http_timed_out} timed out, ${cron.http_failed} returned an error status, ${cron.http_missing} have no answer logged`,
+        ];
+
     const facts = [
-      `Engine-generated signals in the last 6h: ${signals?.length ?? 0}`,
-      `Confirmed Telegram deliveries (message_id present): ${sent.length}`,
-      `Telegram delivery failures: ${failed.length}`,
-      `Telegram skipped: ${skipped.length}`,
-      `Signals with no Telegram telemetry: ${notAttempted.length}`,
-      `Confirmed Telegram delivery rate: ${deliveryRate}%`,
+      ...cronFacts,
+      `Engine-generated signals in the last ${AMA_LOOKBACK_HOURS}h: ${signals?.length ?? 0}`,
+      `Signals that should have gone to Telegram (user has Telegram set up and confidence >= their threshold): ${shouldPush.length}`,
+      `Of those, confirmed delivered (status sent + message_id): ${pushed.length}`,
+      `Of those, NOT confirmed delivered: ${missed.length}`,
+      missedDetails ? `Not delivered: ${missedDetails}` : 'Not delivered: none',
+      `Signals for users without Telegram set up (no push expected): ${noTelegram.length}`,
+      `Signals saved below the user's current threshold: ${belowThreshold.length}`,
       `Forex/XAU signals inside market-closed hours: ${weekendForexLeaks.length}`,
-      failureDetails
-        ? `Recent Telegram failures: ${failureDetails}`
-        : 'Recent Telegram failures: none',
     ].join('\n');
 
     const report = await callDeepSeek(
-      'You are Ama, QA for a trading-signal engine. Confirm that signals are actually reaching Telegram using the delivery telemetry, not merely that the cron or function succeeded. Under 120 words, plain text, no filler. Clearly distinguish confirmed deliveries from failures, skipped signals, and signals with no telemetry. If weekendForexLeaks > 0, make that the headline regression.',
-      `Here is what I checked:\n${facts}\n\nWrite the report. Do not claim a Telegram delivery is confirmed unless telegram_status is "sent" AND telegram_message_id is present.`,
+      'You are Ama, QA for a trading-signal engine. Report two things: whether the hourly server job ran and the engine answered, and whether every signal that met the confidence threshold was actually delivered to Telegram. Under 130 words, plain text, no filler. Start with the verdict you are given, word for word. If there are forex/XAU signals inside market-closed hours, make that the headline regression. Do not invent causes.',
+      `Here is what I checked:\n${facts}\n\nVerdict: ${hasProblem ? 'PROBLEM' : 'ALL CLEAR'}. Problems counted: ${problemCount}${jobConcern ? ' (plus a job health concern)' : ''}.\nWrite the report. Do not call a delivery confirmed unless it is in the "confirmed delivered" count.`,
     );
 
-    await setDone(supabase, 'ama', task, report);
+    const alert = hasProblem && alertSettings ? `\n\n${await sendAmaAlert(supabase, alertSettings, report)}` : '';
+    await setDone(supabase, 'ama', task, `${report}${alert}`);
   } catch (err) {
-    await setError(
-      supabase,
-      'ama',
-      task,
-      err instanceof Error ? err.message : 'Unknown error'
-    );
+    // A check that cannot run is itself a problem worth an alert.
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    const alert = alertSettings
+      ? `\n\n${await sendAmaAlert(supabase, alertSettings, `Ama could not complete her check: ${message}`).catch(() => 'Alert: could not be sent.')}`
+      : '';
+    await setError(supabase, 'ama', task, `${message}${alert}`);
   }
 }
 async function runYaw(supabase: ReturnType<typeof createClient>) {
@@ -379,7 +422,7 @@ Deno.serve(async (req) => {
     const settings = settingsRows?.[0] ?? null;
 
     if (employee === 'kofi') await runKofi(supabase);
-    else if (employee === 'ama') await runAma(supabase);
+    else if (employee === 'ama') await runAma(supabase, settings);
     else if (employee === 'yaw') await runYaw(supabase);
     else if (employee === 'kobby') await runKobby(supabase);
     else if (employee === 'boss') await runBoss(supabase, settings);
