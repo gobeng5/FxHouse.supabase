@@ -17,8 +17,86 @@ const corsHeaders = {
 // ws.derivws.com endpoint, which went dark on 2026-09-20 while the public one
 // stayed up, so the engine lost data while the app kept working.
 const DERIV_APP_ID = Deno.env.get('DERIV_APP_ID') ?? '33WEdZurDjmrV0NAA8yZC';
+const DERIV_WS_URLS = [
+  'wss://api.derivws.com/trading/v1/options/ws/public',
+  `wss://ws.derivws.com/websockets/v3?app_id=${DERIV_APP_ID}`,
+  `wss://ws.derivws.com/websockets/v3?app_id=1089`,
+  `wss://ws.binaryws.com/websockets/v3?app_id=1089`,
+];
 
-// --- Telegram alert helpers (mirrors src/hooks/useTelegramAlert.ts formatting) ---
+// Try each endpoint in order; resolve on the first that answers.
+async function derivRequest(payload: Record<string, unknown>, timeoutMs: number): Promise<any> {
+  let lastError: Error = new Error('no endpoint attempted');
+
+  for (const url of DERIV_WS_URLS) {
+    try {
+      return await new Promise<any>((resolve, reject) => {
+        const ws = new WebSocket(url);
+
+        const timeout = setTimeout(() => {
+          try { ws.close(); } catch { /* noop */ }
+          reject(new Error('Timeout'));
+        }, timeoutMs);
+
+        ws.onopen = () => ws.send(JSON.stringify(payload));
+
+        ws.onmessage = (event: MessageEvent) => {
+          clearTimeout(timeout);
+
+          let data: any;
+
+          try {
+            data = JSON.parse(event.data);
+          } catch (e) {
+            try { ws.close(); } catch { /* noop */ }
+            reject(e as Error);
+            return;
+          }
+
+          try { ws.close(); } catch { /* noop */ }
+
+          if (data.error) {
+            reject(new Error(data.error.message));
+            return;
+          }
+
+          resolve(data);
+        };
+
+        ws.onerror = () => {
+          clearTimeout(timeout);
+          reject(new Error('WebSocket error'));
+        };
+      });
+    } catch (e) {
+      lastError = e as Error;
+    }
+  }
+
+  throw lastError;
+}
+const DERIV_SYMBOL_MAP: Record<string, string> = {
+  'EUR/USD': 'frxEURUSD', 'GBP/USD': 'frxGBPUSD', 'USD/JPY': 'frxUSDJPY',
+  'AUD/USD': 'frxAUDUSD', 'GBP/JPY': 'frxGBPJPY', 'XAU/USD': 'frxXAUUSD',
+  'V10': 'R_10', 'V25': 'R_25', 'V50': 'R_50', 'V75': 'R_75', 'V100': 'R_100', 'BOOM1000': 'BOOM1000',
+};
+
+const SYNTHETIC_INDICES = ['V10', 'V25', 'V50', 'V75', 'V100', 'BOOM1000'];
+const FOREX_INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'GBP/JPY', 'XAU/USD'];
+const ALL_INSTRUMENTS = [...FOREX_INSTRUMENTS, ...SYNTHETIC_INDICES];
+
+const isSyntheticIndex = (instrument: string) => SYNTHETIC_INDICES.includes(instrument);
+const getPipValue = (instrument: string) => {
+  if (isSyntheticIndex(instrument)) return 0.01;
+  if (instrument === 'USD/JPY' || instrument === 'GBP/JPY') return 0.01;
+  return 0.0001;
+};
+const getDecimals = (instrument: string) => {
+  if (isSyntheticIndex(instrument) || instrument.includes('JPY') || instrument === 'XAU/USD') return 2;
+  return 4;
+};
+
+ // --- Telegram alert helpers (mirrors src/hooks/useTelegramAlert.ts formatting) ---
 const escapeMd = (text: string): string => text.replace(/[_*`\[\]]/g, '');
 
 const extractStructuralGate = (reasoning: string): string => {
@@ -40,12 +118,27 @@ async function sendTelegramSignalAlert(
   settings: Record<string, any>,
   saved: Record<string, any>,
 ) {
-  if (!settings.telegram_enabled || !settings.telegram_bot_token || !settings.telegram_chat_id) return;
+  if (!settings.telegram_enabled || !settings.telegram_bot_token || !settings.telegram_chat_id) {
+    await supabase
+      .from('generated_signals')
+      .update({
+        telegram_status: 'skipped',
+        telegram_message_id: null,
+        telegram_error: 'Telegram disabled or missing bot credentials',
+      })
+      .eq('id', saved.id);
+
+    return;
+  }
 
   const direction = saved.direction === 'bullish' ? '🟢 LONG' : '🔴 SHORT';
-  const rr = saved.entry_price && saved.stop_loss && saved.take_profit_2
-    ? Math.abs(saved.take_profit_2 - saved.entry_price) / Math.abs(saved.entry_price - saved.stop_loss)
-    : 0;
+
+  const rr =
+    saved.entry_price && saved.stop_loss && saved.take_profit_2
+      ? Math.abs(saved.take_profit_2 - saved.entry_price) /
+        Math.abs(saved.entry_price - saved.stop_loss)
+      : 0;
+
   const gate = extractStructuralGate(saved.reasoning || '');
 
   const message = [
@@ -71,7 +164,7 @@ async function sendTelegramSignalAlert(
   ].filter(Boolean).join('\n');
 
   try {
-    await supabase.functions.invoke('send-telegram', {
+    const { data, error } = await supabase.functions.invoke('send-telegram', {
       body: {
         action: 'send',
         bot_token: settings.telegram_bot_token,
@@ -79,67 +172,68 @@ async function sendTelegramSignalAlert(
         message,
       },
     });
-  } catch (err) {
-    console.error(`[Telegram] Failed to send alert for ${saved.instrument}:`, err);
-  }
-}
-const DERIV_WS_URLS = [
-  'wss://api.derivws.com/trading/v1/options/ws/public',
-  `wss://ws.derivws.com/websockets/v3?app_id=${DERIV_APP_ID}`,
-  `wss://ws.derivws.com/websockets/v3?app_id=1089`,
-  `wss://ws.binaryws.com/websockets/v3?app_id=1089`,
-];
 
-// Try each endpoint in order; resolve on the first that answers.
-async function derivRequest(payload: Record<string, unknown>, timeoutMs: number): Promise<any> {
-  let lastError: Error = new Error('no endpoint attempted');
-  for (const url of DERIV_WS_URLS) {
-    try {
-      return await new Promise<any>((resolve, reject) => {
-        const ws = new WebSocket(url);
-        const timeout = setTimeout(() => { try { ws.close(); } catch { /* noop */ } reject(new Error('Timeout')); }, timeoutMs);
-        ws.onopen = () => ws.send(JSON.stringify(payload));
-        ws.onmessage = (event: MessageEvent) => {
-          clearTimeout(timeout);
-          let data: any;
-          try { data = JSON.parse(event.data); } catch (e) { try { ws.close(); } catch { /* noop */ } reject(e as Error); return; }
-          try { ws.close(); } catch { /* noop */ }
-          if (data.error) { reject(new Error(data.error.message)); return; }
-          resolve(data);
-        };
-        ws.onerror = () => { clearTimeout(timeout); reject(new Error('WebSocket error')); };
-      });
-    } catch (e) {
-      lastError = e as Error;
+    if (error) {
+      await supabase
+        .from('generated_signals')
+        .update({
+          telegram_status: 'failed',
+          telegram_message_id: null,
+          telegram_error: error.message || String(error),
+        })
+        .eq('id', saved.id);
+
+      console.error(`[Telegram] Invoke failed for ${saved.instrument}:`, error);
+      return;
     }
+
+    if (!data?.success) {
+      await supabase
+        .from('generated_signals')
+        .update({
+          telegram_status: 'failed',
+          telegram_message_id: null,
+          telegram_error: data?.error || 'Telegram delivery failed',
+        })
+        .eq('id', saved.id);
+
+      console.error(`[Telegram] Delivery failed for ${saved.instrument}:`, data);
+      return;
+    }
+
+    await supabase
+      .from('generated_signals')
+      .update({
+        telegram_status: 'sent',
+        telegram_message_id: data.message_id ?? null,
+        telegram_error: null,
+      })
+      .eq('id', saved.id);
+
+    console.log(
+      `[Telegram] Signal delivered for ${saved.instrument}, message_id=${data.message_id ?? 'unknown'}`
+    );
+  } catch (err) {
+    const errorMessage =
+      err instanceof Error ? err.message : String(err);
+
+    await supabase
+      .from('generated_signals')
+      .update({
+        telegram_status: 'failed',
+        telegram_message_id: null,
+        telegram_error: errorMessage,
+      })
+      .eq('id', saved.id);
+
+    console.error(
+      `[Telegram] Failed to send alert for ${saved.instrument}:`,
+      err
+    );
   }
-  throw lastError;
 }
 
-const DERIV_SYMBOL_MAP: Record<string, string> = {
-  'EUR/USD': 'frxEURUSD', 'GBP/USD': 'frxGBPUSD', 'USD/JPY': 'frxUSDJPY',
-  'AUD/USD': 'frxAUDUSD', 'GBP/JPY': 'frxGBPJPY', 'XAU/USD': 'frxXAUUSD',
-  'V10': 'R_10', 'V25': 'R_25', 'V50': 'R_50', 'V75': 'R_75', 'V100': 'R_100', 'BOOM1000': 'BOOM1000',
-};
-
-const SYNTHETIC_INDICES = ['V10', 'V25', 'V50', 'V75', 'V100', 'BOOM1000'];
-const FOREX_INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'GBP/JPY', 'XAU/USD'];
-const ALL_INSTRUMENTS = [...FOREX_INSTRUMENTS, ...SYNTHETIC_INDICES];
-
-const isSyntheticIndex = (instrument: string) => SYNTHETIC_INDICES.includes(instrument);
-const getPipValue = (instrument: string) => {
-  if (isSyntheticIndex(instrument)) return 0.01;
-  if (instrument === 'USD/JPY' || instrument === 'GBP/JPY') return 0.01;
-  return 0.0001;
-};
-const getDecimals = (instrument: string) => {
-  if (isSyntheticIndex(instrument) || instrument.includes('JPY') || instrument === 'XAU/USD') return 2;
-  return 4;
-};
-
-interface CandleData { open: number; high: number; low: number; close: number; epoch: number; }
-
-// =================== DERIV DATA FETCHING ===================
+// =================== DATA FETCHING ===================
 async function fetchCandles(symbol: string, granularity: number, count: number): Promise<CandleData[]> {
   const data = await derivRequest({
     ticks_history: symbol, adjust_start_time: 1,
@@ -1784,3 +1878,10 @@ Deno.serve(async (req) => {
     });
   }
 });
+
+
+
+
+
+
+
