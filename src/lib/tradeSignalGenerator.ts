@@ -627,6 +627,8 @@ const applySmcStrategy = (
       holdingPeriod: 'Hours to 3 days',
       reasoning: reason,
       triggerCloseEpoch: setup.triggerCloseEpoch,
+      // The rule checklist that produced the setup; stored with the signal and listed in alerts.
+      confidenceBreakdown: setup.parameters,
       risk: {
         entry: setup.entry,
         effectiveEntry,

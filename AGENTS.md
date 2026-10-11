@@ -4,5 +4,5 @@
 - Files in `_shared/analysis/` must be runtime-neutral (no `@/` aliases, `.ts` extensions on relative imports) — they load in both Vite and Deno.
 - Swing confidence: persisted breakdown must equal the scored items (total = Σweight, max = Σmaxweight = 46) — so saved numbers always reproduce the displayed confidence.
 - Scoring uses closed candles only on both paths — deterministic, identical inputs.
-- Forex and gold signals come only from `_shared/analysis/smcChochFvg.ts` (SMC CHoCH + FVG); the app and the engine both call `evaluateSmcChochFvg` and add no rules of their own. These signals carry the fixed `SMC_CONFIDENCE`, no confidence breakdown, and one target in all three TP slots; the swing-confidence rule above applies to synthetics only.
+- Forex and gold signals come only from `_shared/analysis/smcChochFvg.ts` (SMC CHoCH + FVG); the app and the engine both call `evaluateSmcChochFvg` and add no rules of their own. These signals carry the fixed `SMC_CONFIDENCE`, the rule checklist (`setup.parameters`, every item 1 of 1) in the breakdown fields, and one target in all three TP slots; the swing-confidence rule above applies to synthetics only.
 - Arbitration and correlation pairs live in the database (`arbitrate_signal`, `correlation_pairs`) — single source for app and engine.

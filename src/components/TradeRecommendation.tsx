@@ -104,8 +104,8 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
               </PopoverTrigger>
               <PopoverContent className="w-80 max-h-96 overflow-y-auto p-0" align="end">
                 <div className="p-3 border-b border-border">
-                  <h4 className="text-sm font-semibold">Confidence Breakdown</h4>
-                  <p className="text-xs text-muted-foreground mt-0.5">Factors contributing to this signal</p>
+                  <h4 className="text-sm font-semibold">{isSmc ? 'What triggered this signal' : 'Confidence Breakdown'}</h4>
+                  <p className="text-xs text-muted-foreground mt-0.5">{isSmc ? 'Every rule below was met' : 'Factors contributing to this signal'}</p>
                 </div>
                 <div className="p-2 space-y-1">
                   {recommendation.confidenceBreakdown.map((item, idx) => (

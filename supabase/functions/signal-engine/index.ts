@@ -114,6 +114,16 @@ const extractStructuralGate = (reasoning: string): string => {
   return triggers.length > 0 ? triggers.join(' | ') : 'Structure Aligned ✅';
 };
 
+// The parameters that produced a signal, one line each — the stored breakdown's contributing items.
+const triggerLines = (breakdown: unknown): string[] => {
+  const items = (Array.isArray(breakdown) ? breakdown : []) as { label?: string; value?: string; contributing?: boolean }[];
+  const lines = items
+    .filter(i => i && i.contributing && i.label)
+    .slice(0, 12)
+    .map(i => `• ${escapeMd(String(i.label))}: ${escapeMd(String(i.value ?? ''))}`);
+  return lines.length ? [``, `📋 *What triggered this signal*`, ...lines] : [];
+};
+
 async function sendTelegramSignalAlert(
   supabase: ReturnType<typeof createClient>,
   settings: Record<string, any>,
@@ -162,10 +172,12 @@ async function sendTelegramSignalAlert(
         ]),
     `📐 R:R: \`${rr.toFixed(1)}\``,
     isSmc ? `⏳ Dropped if not filled within 24h` : '',
+    ...triggerLines(saved.confluence_breakdown),
     ``,
     `🔒 Gate: ${gate}`,
     ``,
-    saved.reasoning ? `💡 ${escapeMd(saved.reasoning)}` : '',
+    // The checklist above already says everything the SMC reasoning sentence does.
+    saved.reasoning && !isSmc ? `💡 ${escapeMd(saved.reasoning)}` : '',
     ``,
     `🕐 ${new Date(saved.generated_at).toUTCString()}`,
     `🆔 \`${String(saved.id).slice(0, 8)}\``,
@@ -805,7 +817,7 @@ interface SignalOutput {
   trade_type: 'swing' | 'day';
   setup_type: string;
   reasoning: string;
-  /** null for the rule-based forex/gold strategy, which has no scored items. */
+  /** For the rule-based forex/gold strategy this is the rule checklist that produced the setup, not a score. */
   confluence_breakdown: { label: string; value: string; weight: number; maxWeight: number; contributing: boolean }[] | null;
   confluence_score_total: number | null;
   confluence_score_max: number | null;
@@ -848,9 +860,9 @@ function generateSmcSignal(
     trade_type: 'swing',
     setup_type: SMC_SETUP_TYPE,
     reasoning: reason,
-    confluence_breakdown: null,
-    confluence_score_total: null,
-    confluence_score_max: null,
+    confluence_breakdown: setup.parameters,
+    confluence_score_total: setup.parameters.length,
+    confluence_score_max: setup.parameters.length,
     trigger_close_epoch: setup.triggerCloseEpoch,
   };
 }

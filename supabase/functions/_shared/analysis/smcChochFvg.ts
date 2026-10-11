@@ -119,6 +119,21 @@ export interface SmcSetup {
   legExtreme: number;
   fvgLow: number;
   fvgHigh: number;
+  /** The conditions that produced this setup, in rule order, with the values that met them. */
+  parameters: SmcParameter[];
+}
+
+/**
+ * One rule and the value that satisfied it. Shaped like a confidence
+ * breakdown item so it is stored and shown through the same fields, but it is
+ * a checklist, not a score: every rule is met (1 of 1) or the setup does not exist.
+ */
+export interface SmcParameter {
+  label: string;
+  value: string;
+  weight: 1;
+  maxWeight: 1;
+  contributing: true;
 }
 
 export interface SmcEvaluation {
@@ -214,13 +229,29 @@ export function evaluateSmcChochFvg(
   const takeProfit = roundTo(entry + dir * risk * R.rewardRisk, decimals);
   const direction = dir === 1 ? 'bullish' : 'bearish';
   const at = new Date(triggerCloseEpoch * 1000).toISOString().slice(11, 16);
+
+  const px = (v: number) => v.toFixed(decimals);
+  const side = (d: Dir) => (d === 1 ? 'high' : 'low');
+  const h4Break = h4Breaks[h4Breaks.length - 1];
+  const h4Level = dir === 1 ? h4[h4Break.swingIndex].high : h4[h4Break.swingIndex].low;
+  const h1Level = dir === 1 ? h1[last.swingIndex].high : h1[last.swingIndex].low;
+  const item = (label: string, value: string): SmcParameter => ({ label, value, weight: 1, maxWeight: 1, contributing: true });
+  const parameters: SmcParameter[] = [
+    item('H4 trend', `${direction} — last H4 structure break was a close ${dir === 1 ? 'above' : 'below'} the swing ${side(dir)} ${px(h4Level)}`),
+    item('H1 change of character', `H1 closed ${dir === 1 ? 'above' : 'below'} the swing ${side(dir)} ${px(h1Level)} at ${at} UTC; the previous H1 break was ${dir === 1 ? 'bearish' : 'bullish'}`),
+    item('Session', `trigger closed at ${at} UTC, inside 07:00–17:00 UTC`),
+    item('Fair value gap', `${px(fvgLow)}–${px(fvgHigh)} in the trigger leg; entry at its midpoint ${px(entry)}`),
+    item('Stop', `leg ${side(-dir as Dir)} ${px(legExtreme)} ${dir === 1 ? 'minus' : 'plus'} ${R.stopBufferAtr} x ATR (H1 ATR ${atr.toFixed(decimals + 1)})`),
+    item('Risk size', `${px(risk)} per unit, above the ${R.minRiskAtr} x ATR minimum`),
+    item('Target', `${R.rewardRisk}R from the entry — ${px(takeProfit)}`),
+  ];
   const reason =
     `SMC CHoCH + FVG. H4 structure ${direction}. H1 CHoCH confirmed at ${at} UTC in the H4 direction. ` +
     `${dir === 1 ? 'Buy' : 'Sell'} limit at the midpoint of the fair value gap ${fvgLow.toFixed(decimals)}–${fvgHigh.toFixed(decimals)}. ` +
     `Stop beyond the leg ${dir === 1 ? 'low' : 'high'} ${legExtreme.toFixed(decimals)} with a 0.1 ATR buffer. One target at ${R.rewardRisk}R; no partial exits.`;
 
   return {
-    setup: { direction, entry, stopLoss, takeProfit, atr, triggerCloseEpoch, legExtreme, fvgLow, fvgHigh },
+    setup: { direction, entry, stopLoss, takeProfit, atr, triggerCloseEpoch, legExtreme, fvgLow, fvgHigh, parameters },
     h4Trend,
     reason,
   };

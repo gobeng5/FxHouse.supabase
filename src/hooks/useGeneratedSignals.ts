@@ -23,6 +23,8 @@ export interface GeneratedSignal {
   trade_type: 'swing' | 'day';
   confidence: number;
   setup_type: string | null;
+  /** Scored items for synthetics; the rule checklist for forex/gold SMC signals. */
+  confluence_breakdown?: unknown;
   entry_price: number;
   /** Realistic fill price after spread (theoretical entry ± half spread) */
   effective_entry?: number | null;

@@ -137,6 +137,8 @@ for (const instrument of ['GBP/JPY', 'XAU/USD', 'EUR/USD'] as TradingInstrument[
   check('Telegram alert sent although confidence 50 is under the user threshold of 70', telegram.some(m => m.includes(instrument)));
   const msg = telegram.find(m => m.includes(instrument)) ?? '';
   check('alert shows one target and no confidence score', msg.includes('Target:') && !msg.includes('TP1') && !msg.includes('Confidence'));
+  check('alert lists the parameters that triggered the signal', ['H4 trend', 'H1 change of character', 'Session', 'Fair value gap', 'Stop', 'Risk size'].every(p => msg.includes(`• ${p}:`)));
+  check('the same parameters are stored with the signal', Array.isArray(row.confluence_breakdown) && row.confluence_breakdown.length === mod.parameters.length && row.confluence_score_total === row.confluence_score_max);
 
   // The web app, same moment, same candles it would fetch (200 D1, 300 H4, 200 H1).
   const h4 = candlesAt(instrument, 14400, 300);
@@ -145,6 +147,7 @@ for (const instrument of ['GBP/JPY', 'XAU/USD', 'EUR/USD'] as TradingInstrument[
   check('web app recommendation equals the engine signal', rec.direction === row.direction && rec.risk.entry === row.entry_price && rec.risk.stopLoss === row.stop_loss && rec.risk.takeProfit2 === row.take_profit_2 && rec.setupType === SMC_SETUP_TYPE,
     `app: ${rec.direction} entry ${rec.risk.entry} stop ${rec.risk.stopLoss} target ${rec.risk.takeProfit2}`);
   check('web app day-trade recommendation is retired', plan.dayTradeRecommendation.direction === 'ranging');
+  check('web app carries the same parameters', JSON.stringify(rec.confidenceBreakdown) === JSON.stringify(row.confluence_breakdown));
   if (instrument === 'GBP/JPY') console.log(`\n--- Telegram alert as sent ---\n${msg}\n`);
 
   // Same hour again, after a signal already exists for that trigger candle.

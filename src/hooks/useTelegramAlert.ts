@@ -24,6 +24,18 @@ const extractStructuralGate = (reasoning: string): string => {
   return triggers.length > 0 ? triggers.join(' | ') : 'Structure Aligned ✅';
 };
 
+type BreakdownItem = { label?: string; value?: string; contributing?: boolean };
+
+// The parameters that produced a signal, one line each — the stored breakdown's contributing items.
+const triggerLines = (breakdown: unknown): string[] => {
+  const items = (Array.isArray(breakdown) ? breakdown : []) as BreakdownItem[];
+  const lines = items
+    .filter(i => i && i.contributing && i.label)
+    .slice(0, 12)
+    .map(i => `• ${escapeMd(String(i.label))}: ${escapeMd(String(i.value ?? ''))}`);
+  return lines.length ? [``, `📋 *What triggered this signal*`, ...lines] : [];
+};
+
 export const useTelegramAlert = () => {
   const { settings } = useUserSettings();
 
@@ -78,10 +90,12 @@ export const useTelegramAlert = () => {
           ]),
       `📐 R:R: \`${rr.toFixed(1)}\``,
       isSmc ? `⏳ Dropped if not filled within 24h` : '',
+      ...triggerLines(signal.confluence_breakdown),
       ``,
       `🔒 Gate: ${gate}`,
       ``,
-      signal.reasoning ? `💡 ${escapeMd(signal.reasoning)}` : '',
+      // The checklist above already says everything the SMC reasoning sentence does.
+      signal.reasoning && !isSmc ? `💡 ${escapeMd(signal.reasoning)}` : '',
       ``,
       `🕐 ${new Date(signal.generated_at).toUTCString()}`,
       `🆔 \`${signal.id.slice(0, 8)}\``,
@@ -119,6 +133,7 @@ export const useTelegramAlert = () => {
           ]),
       `📐 R:R: \`${rr.toFixed(1)}\``,
       `⏱ Hold: ${rec.holdingPeriod}`,
+      ...triggerLines(rec.confidenceBreakdown),
       ``,
       `🔒 Gate: ${gate}`,
       ``,
