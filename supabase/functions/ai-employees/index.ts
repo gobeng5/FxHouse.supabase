@@ -35,7 +35,9 @@ async function callDeepSeek(systemPrompt: string, userPrompt: string): Promise<s
   const apiKey = Deno.env.get('DEEPSEEK_API_KEY');
   if (!apiKey) throw new Error('DEEPSEEK_API_KEY is not configured — set it as a Supabase secret.');
 
-  let maxTokens = 600;
+  // The model spends part of this budget thinking before it writes, so a
+  // tight limit can leave nothing for the reply itself.
+  let maxTokens = 1500;
   let finishReason = 'unknown';
 
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -159,7 +161,7 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
     const { data: signals, error: sigErr } = await supabase
       .from('generated_signals')
       .select(
-        'id, user_id, instrument, trade_type, confidence, engine_generated, created_at, telegram_status, telegram_message_id, telegram_error'
+        'id, user_id, instrument, trade_type, setup_type, confidence, engine_generated, created_at, telegram_status, telegram_message_id, telegram_error'
       )
       .gte('created_at', since)
       .eq('engine_generated', true);
@@ -203,7 +205,9 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
     // and confidence >= their notify_min_confidence (default 70). Uses the
     // CURRENT threshold, so a threshold changed inside the window can mislabel.
     const telegramReady = (u: any) => !!(u?.telegram_enabled && u.telegram_bot_token && u.telegram_chat_id);
+    // Forex/gold SMC CHoCH + FVG signals are rule-based and always alerted, whatever the threshold.
     const meetsThreshold = (s: any) =>
+      s.setup_type === 'smc_choch_fvg' ||
       Number(s.confidence) >= (settingsByUser.get(s.user_id)?.notify_min_confidence ?? 70);
 
     const shouldPush = (signals ?? []).filter((s: any) => telegramReady(settingsByUser.get(s.user_id)) && meetsThreshold(s));
@@ -252,10 +256,20 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
       `Forex/XAU signals inside market-closed hours: ${weekendForexLeaks.length}`,
     ].join('\n');
 
-    const report = await callDeepSeek(
-      'You are Ama, QA for a trading-signal engine. Report two things: whether the hourly server job ran and the engine answered, and whether every signal that met the confidence threshold was actually delivered to Telegram. Under 130 words, plain text, no filler. Start with the verdict you are given, word for word. If there are forex/XAU signals inside market-closed hours, make that the headline regression. Do not invent causes.',
-      `Here is what I checked:\n${facts}\n\nVerdict: ${hasProblem ? 'PROBLEM' : 'ALL CLEAR'}. Problems counted: ${problemCount}${jobConcern ? ' (plus a job health concern)' : ''}.\nWrite the report. Do not call a delivery confirmed unless it is in the "confirmed delivered" count.`,
-    );
+    // The checks above are the result; DeepSeek only words it. If the model
+    // fails, the raw facts go out instead so a model outage never hides or
+    // fakes a pipeline problem.
+    const verdict = hasProblem ? 'PROBLEM' : 'ALL CLEAR';
+    let report: string;
+    try {
+      report = await callDeepSeek(
+        'You are Ama, QA for a trading-signal engine. Report two things: whether the hourly server job ran and the engine answered, and whether every signal that met the confidence threshold was actually delivered to Telegram. Under 130 words, plain text, no filler. Start with the verdict you are given, word for word. If there are forex/XAU signals inside market-closed hours, make that the headline regression. Do not invent causes.',
+        `Here is what I checked:\n${facts}\n\nVerdict: ${verdict}. Problems counted: ${problemCount}${jobConcern ? ' (plus a job health concern)' : ''}.\nWrite the report. Do not call a delivery confirmed unless it is in the "confirmed delivered" count.`,
+      );
+    } catch (llmErr) {
+      const reason = llmErr instanceof Error ? llmErr.message : 'unknown error';
+      report = `${verdict}\n\n${facts}\n\n(Plain figures: the summary could not be written — ${reason})`;
+    }
 
     const alert = hasProblem && alertSettings ? `\n\n${await sendAmaAlert(supabase, alertSettings, report)}` : '';
     await setDone(supabase, 'ama', task, `${report}${alert}`);
