@@ -4,6 +4,7 @@ import { computeSwingConfidence } from '../_shared/analysis/swingConfidence.ts';
 import type { TradingInstrument, TrendDirection } from '../_shared/analysis/core.ts';
 import { findOrderBlocks as findOrderBlocksShared, findFairValueGaps as findFairValueGapsShared, analyzeAsianSession } from '../_shared/analysis/smcAnalysis.ts';
 import type { OrderBlock, FairValueGap } from '../_shared/analysis/smcAnalysis.ts';
+import { evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../_shared/analysis/smcChochFvg.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 
 const corsHeaders = {
@@ -140,20 +141,27 @@ async function sendTelegramSignalAlert(
       : 0;
 
   const gate = extractStructuralGate(saved.reasoning || '');
+  // SMC CHoCH + FVG is rule-based: a limit order with one target and no score.
+  const isSmc = saved.setup_type === SMC_SETUP_TYPE;
 
   const message = [
     `📊 *FX Swing Bot Signal*`,
     ``,
     `🏷 *${saved.instrument}* — ${direction}`,
-    `📈 Type: ${saved.trade_type.toUpperCase()}`,
-    `🎯 Confidence: ${saved.confidence}%`,
+    `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : saved.trade_type.toUpperCase()}`,
+    isSmc ? '' : `🎯 Confidence: ${saved.confidence}%`,
     ``,
     `▶️ Entry: \`${saved.entry_price}\``,
     `🛑 Stop Loss: \`${saved.stop_loss}\``,
-    `✅ TP1: \`${saved.take_profit_1}\``,
-    `✅ TP2: \`${saved.take_profit_2}\``,
-    `✅ TP3: \`${saved.take_profit_3}\``,
+    ...(isSmc
+      ? [`✅ Target: \`${saved.take_profit_2}\``]
+      : [
+          `✅ TP1: \`${saved.take_profit_1}\``,
+          `✅ TP2: \`${saved.take_profit_2}\``,
+          `✅ TP3: \`${saved.take_profit_3}\``,
+        ]),
     `📐 R:R: \`${rr.toFixed(1)}\``,
+    isSmc ? `⏳ Dropped if not filled within 24h` : '',
     ``,
     `🔒 Gate: ${gate}`,
     ``,
@@ -797,9 +805,54 @@ interface SignalOutput {
   trade_type: 'swing' | 'day';
   setup_type: string;
   reasoning: string;
-  confluence_breakdown: { label: string; value: string; weight: number; maxWeight: number; contributing: boolean }[];
-  confluence_score_total: number;
-  confluence_score_max: number;
+  /** null for the rule-based forex/gold strategy, which has no scored items. */
+  confluence_breakdown: { label: string; value: string; weight: number; maxWeight: number; contributing: boolean }[] | null;
+  confluence_score_total: number | null;
+  confluence_score_max: number | null;
+  /** SMC CHoCH + FVG only: close time of the trigger candle. Not stored; used to avoid issuing a setup twice. */
+  trigger_close_epoch?: number;
+}
+
+/**
+ * Forex and gold: SMC CHoCH + FVG, evaluated by the shared module the web app
+ * also uses. A setup exists only on the hour its trigger candle closes.
+ */
+function generateSmcSignal(
+  instrument: string,
+  fourHourCandles: CandleData[],
+  oneHourCandles: CandleData[],
+  nowEpoch: number,
+): SignalOutput | null {
+  const { setup, reason } = evaluateSmcChochFvg(instrument as TradingInstrument, fourHourCandles, oneHourCandles, nowEpoch);
+  if (!setup) return null;
+
+  const closedOneHour = oneHourCandles.filter(c => c.epoch + 3600 <= nowEpoch);
+  const atrPercentile = computeAtrPercentile(closedOneHour, 14, 200);
+  const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
+
+  return {
+    instrument,
+    direction: setup.direction,
+    entry_price: setup.entry,
+    effective_entry: effectiveEntryWithSpread(setup.direction, setup.entry, spread),
+    spread_applied: spread,
+    atr_percentile_at_entry: atrPercentile,
+    spread_multiplier_applied: appliedSpreadMultiplier(instrument, atrPercentile),
+    stop_loss: setup.stopLoss,
+    // One target. The three slots carry the same price so nothing implies a partial exit.
+    take_profit_1: setup.takeProfit,
+    take_profit_2: setup.takeProfit,
+    take_profit_3: setup.takeProfit,
+    risk_reward_ratio: Math.abs(setup.takeProfit - setup.entry) / Math.abs(setup.entry - setup.stopLoss),
+    confidence: SMC_CONFIDENCE,
+    trade_type: 'swing',
+    setup_type: SMC_SETUP_TYPE,
+    reasoning: reason,
+    confluence_breakdown: null,
+    confluence_score_total: null,
+    confluence_score_max: null,
+    trigger_close_epoch: setup.triggerCloseEpoch,
+  };
 }
 
 
@@ -1498,7 +1551,7 @@ async function checkOutcomes(supabase: any) {
           takeProfit1: signal.take_profit_1,
           takeProfit2: signal.take_profit_2,
           takeProfit3: signal.take_profit_3,
-          generatedAtEpoch: Math.floor(new Date(signal.generated_at).getTime() / 1000),
+          generatedAtEpoch: resolutionStartEpoch(signal.setup_type, Math.floor(new Date(signal.generated_at).getTime() / 1000)),
           requiresFill: true,
           spread: getSpread(signal.instrument),
           spreadMultiplier: signal.spread_multiplier_applied ??
@@ -1619,7 +1672,7 @@ async function reresolveHistory(supabase: any, from: string, limit = 5000) {
       takeProfit1: signal.take_profit_1,
       takeProfit2: signal.take_profit_2,
       takeProfit3: signal.take_profit_3,
-      generatedAtEpoch: genEpoch,
+      generatedAtEpoch: resolutionStartEpoch(signal.setup_type, genEpoch),
       requiresFill: true,
       spread: getSpread(signal.instrument),
       spreadMultiplier: signal.spread_multiplier_applied ??
@@ -1748,31 +1801,60 @@ Deno.serve(async (req) => {
         
         try {
           const symbol = DERIV_SYMBOL_MAP[instrument];
-          const [daily, fourHour, oneHour, fifteenMin] = await Promise.all([
-            fetchCandles(symbol, 86400, 100),
-            fetchCandles(symbol, 14400, 100),
-            fetchCandles(symbol, 3600, 200),
-            fetchCandles(symbol, 900, 50),
-          ]);
-          
-          if (daily.length < 50 || fourHour.length < 50) {
-            errors.push(`${instrument}: Insufficient data`);
-            continue;
-          }
-          
-          const swingSignal = generateSignal(instrument, daily, fourHour, fifteenMin, oneHour, {
-            forex_min_rr: settings.forex_min_rr,
-            synthetic_min_rr: settings.synthetic_min_rr,
-            ignore_counter_trend: settings.ignore_counter_trend,
-          });
-          const daySignal = generateDaySignal(instrument, daily, fourHour, fifteenMin, oneHour);
+          let candidates: (SignalOutput | null)[];
 
-          // Process both candidates through the same arbitration/insert/Telegram
+          if (isForex) {
+            // Forex and gold trade one strategy; it reads H4 and H1 only.
+            const [fourHour, oneHour] = await Promise.all([
+              fetchCandles(symbol, 14400, 100),
+              fetchCandles(symbol, 3600, 200),
+            ]);
+            candidates = [generateSmcSignal(instrument, fourHour, oneHour, Math.floor(Date.now() / 1000))];
+          } else {
+            const [daily, fourHour, oneHour, fifteenMin] = await Promise.all([
+              fetchCandles(symbol, 86400, 100),
+              fetchCandles(symbol, 14400, 100),
+              fetchCandles(symbol, 3600, 200),
+              fetchCandles(symbol, 900, 50),
+            ]);
+
+            if (daily.length < 50 || fourHour.length < 50) {
+              errors.push(`${instrument}: Insufficient data`);
+              continue;
+            }
+
+            const swingSignal = generateSignal(instrument, daily, fourHour, fifteenMin, oneHour, {
+              forex_min_rr: settings.forex_min_rr,
+              synthetic_min_rr: settings.synthetic_min_rr,
+              ignore_counter_trend: settings.ignore_counter_trend,
+            });
+            const daySignal = generateDaySignal(instrument, daily, fourHour, fifteenMin, oneHour);
+            candidates = [swingSignal, daySignal];
+          }
+
+          // Process every candidate through the same arbitration/insert/Telegram
           // pipeline. Each is independent — a block or failure on one does not
           // stop the other from being attempted.
-          for (const signal of [swingSignal, daySignal]) {
+          for (const signal of candidates) {
             if (!signal) continue;
-            if (signal.confidence < settings.notify_min_confidence) continue;
+            // The rule-based strategy has no score, so the confidence threshold does not apply to it.
+            const isSmc = signal.setup_type === SMC_SETUP_TYPE;
+            if (!isSmc && signal.confidence < settings.notify_min_confidence) continue;
+
+            // An SMC setup belongs to one trigger candle and stays visible for the whole
+            // hour (and to the web app too): never issue it twice for the same user.
+            if (isSmc && signal.trigger_close_epoch) {
+              const { data: existing, error: dupErr } = await supabase
+                .from('generated_signals')
+                .select('id')
+                .eq('user_id', settings.user_id)
+                .eq('instrument', signal.instrument)
+                .eq('setup_type', SMC_SETUP_TYPE)
+                .gte('generated_at', new Date(signal.trigger_close_epoch * 1000).toISOString())
+                .limit(1);
+              if (dupErr) { errors.push(`${instrument}: duplicate check failed - ${dupErr.message}`); continue; }
+              if (existing?.length) continue;
+            }
 
             // ---- Unified arbitration: the Postgres function is the single source of truth ----
             // Fail closed: any error, missing verdict, or unexpected shape blocks the signal.
@@ -1840,7 +1922,7 @@ Deno.serve(async (req) => {
             totalSignals++;
 
             // Respect each user's own notify_min_confidence threshold for Telegram alerts.
-            if (savedSignal && signal.confidence >= (settings.notify_min_confidence ?? 70)) {
+            if (savedSignal && (isSmc || signal.confidence >= (settings.notify_min_confidence ?? 70))) {
               await sendTelegramSignalAlert(supabase, settings, savedSignal);
             }
 

@@ -67,7 +67,9 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
 
   // For ranging, show "NO TRADE" prominently
   const displayDirection = isRanging ? 'NO TRADE' : direction;
-  const displaySetup = isRanging ? 'Wait for clarity' : setupType.replace('_', ' ');
+  // Forex and gold: rule-based SMC CHoCH + FVG — one target, and a fixed backtest figure instead of a score.
+  const isSmc = setupType === 'smc_choch_fvg';
+  const displaySetup = isRanging ? 'Wait for clarity' : isSmc ? 'SMC CHoCH + FVG' : setupType.replace('_', ' ');
 
   return (
     <div className="space-y-4">
@@ -88,7 +90,7 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
         </div>
         <div className="text-right flex items-center gap-2">
           <div>
-            <div className="text-sm text-muted-foreground mb-1">{isRanging ? 'Clarity' : 'Confidence'}</div>
+            <div className="text-sm text-muted-foreground mb-1">{isRanging ? 'Clarity' : isSmc ? 'Backtest win rate' : 'Confidence'}</div>
             <div className={cn('font-mono text-3xl font-bold', styles.text)}>
               {confidence}%
             </div>
@@ -212,11 +214,14 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
           <span className="text-xs font-semibold text-muted-foreground uppercase">Take Profit Targets</span>
         </div>
         
-        {[
-          { label: 'TP1', price: risk.takeProfit1, rr: riskReward1 },
-          { label: 'TP2', price: risk.takeProfit2, rr: riskReward2 },
-          { label: 'TP3', price: risk.takeProfit3, rr: riskReward3 },
-        ].map(({ label, price, rr }) => (
+        {(isSmc
+          ? [{ label: 'Target', price: risk.takeProfit2, rr: riskReward2 }]
+          : [
+              { label: 'TP1', price: risk.takeProfit1, rr: riskReward1 },
+              { label: 'TP2', price: risk.takeProfit2, rr: riskReward2 },
+              { label: 'TP3', price: risk.takeProfit3, rr: riskReward3 },
+            ]
+        ).map(({ label, price, rr }) => (
           <div key={label} className="flex items-center justify-between p-2 rounded bg-bullish/5 border border-bullish/20">
             <span className="text-sm font-medium text-bullish">{label}</span>
             <div className="flex items-center gap-4">

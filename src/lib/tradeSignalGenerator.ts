@@ -62,6 +62,7 @@ export type { AnalysisResult } from '../../supabase/functions/_shared/analysis/m
 import { computeSwingConfidence, SWING_CONFIDENCE_MAX } from '../../supabase/functions/_shared/analysis/swingConfidence.ts';
 import { analyzeMarket } from '../../supabase/functions/_shared/analysis/marketAnalysis.ts';
 import type { AnalysisResult } from '../../supabase/functions/_shared/analysis/marketAnalysis.ts';
+import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
 
 // Swing confidence is computed ONLY by the shared canonical module (also used by the signal engine).
 
@@ -573,6 +574,105 @@ const generateDayTradeRecommendation = (
   };
 };
 
+/**
+ * Forex and gold trade one strategy: SMC CHoCH + FVG, evaluated by the shared
+ * module the signal engine also uses. This replaces the plan's swing and
+ * day-trade recommendations (and the levels derived from them) for those
+ * instruments; the surrounding market analysis is left as context.
+ */
+const applySmcStrategy = (
+  plan: TradePlan,
+  fourHourCandles: CandleData[],
+  oneHourCandles: CandleData[],
+  atrPercentile: number | null,
+  pip: number,
+  nowEpoch: number,
+): TradePlan => {
+  const instrument = plan.pair;
+  const { currentPrice } = plan;
+  const decimals = getInstrumentDecimals(instrument);
+  const { setup, reason } = evaluateSmcChochFvg(instrument, fourHourCandles, oneHourCandles, nowEpoch);
+
+  const noTrade = (tradeType: 'swing' | 'day', reasoning: string): TradePlan['recommendation'] => ({
+    direction: 'ranging',
+    confidence: 0,
+    setupType: 'range',
+    preferPendingOrder: true,
+    tradeType,
+    holdingPeriod: '—',
+    reasoning,
+    risk: {
+      entry: currentPrice,
+      stopLoss: currentPrice,
+      stopDistance: 0,
+      riskPercent: 1,
+      takeProfit1: currentPrice,
+      takeProfit2: currentPrice,
+      takeProfit3: currentPrice,
+      trailingStopLogic: '—',
+      breakevenRule: '—',
+    },
+  });
+
+  let recommendation = noTrade('swing', `No setup this hour. ${reason}`);
+  if (setup) {
+    const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
+    const effectiveEntry = effectiveEntryWithSpread(setup.direction, setup.entry, spread);
+    recommendation = {
+      direction: setup.direction,
+      confidence: SMC_CONFIDENCE,
+      setupType: SMC_SETUP_TYPE,
+      preferPendingOrder: true,
+      tradeType: 'swing',
+      holdingPeriod: 'Hours to 3 days',
+      reasoning: reason,
+      triggerCloseEpoch: setup.triggerCloseEpoch,
+      risk: {
+        entry: setup.entry,
+        effectiveEntry,
+        spreadApplied: spread,
+        atrPercentile: atrPercentile ?? undefined,
+        spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
+        stopLoss: setup.stopLoss,
+        stopDistance: Math.round(Math.abs(effectiveEntry - setup.stopLoss) / pip),
+        riskPercent: 1,
+        // One target. The three slots carry the same price so nothing implies a partial exit.
+        takeProfit1: setup.takeProfit,
+        takeProfit2: setup.takeProfit,
+        takeProfit3: setup.takeProfit,
+        trailingStopLogic: 'None — fixed stop, single 2R target',
+        breakevenRule: 'None — the stop is not moved',
+      },
+    };
+  }
+
+  const structural = plan.keyLevels.filter(l => l.type === 'support' || l.type === 'resistance');
+  const keyLevels: PriceLevel[] = setup
+    ? [
+        ...structural,
+        { price: setup.takeProfit, type: 'take_profit' as const, description: 'Target (2R)', strength: 'strong' as const },
+        { price: setup.entry, type: 'entry' as const, description: `${setup.direction === 'bullish' ? 'Buy' : 'Sell'} limit entry (FVG midpoint)`, strength: 'strong' as const },
+        { price: setup.stopLoss, type: 'stop_loss' as const, description: 'Stop loss', strength: 'strong' as const },
+      ].sort((a, b) => b.price - a.price)
+    : structural;
+
+  return {
+    ...plan,
+    recommendation,
+    dayTradeRecommendation: noTrade('day', 'Day-trade signals are retired for forex and gold. These instruments trade one strategy, SMC CHoCH + FVG — see the main signal.'),
+    keyLevels,
+    executionPlan: {
+      ...plan.executionPlan,
+      preLondonChecklist: [
+        ...plan.executionPlan.preLondonChecklist.slice(0, -1),
+        setup
+          ? `Set ${setup.direction === 'bullish' ? 'buy' : 'sell'} limit at ${setup.entry.toFixed(decimals)}, stop ${setup.stopLoss.toFixed(decimals)}, target ${setup.takeProfit.toFixed(decimals)}`
+          : 'No SMC CHoCH + FVG setup this hour — no order to place',
+      ],
+    },
+  };
+};
+
 // Generate complete trade plan - Multi-timeframe analysis
 export const generateTradePlan = (
   instrument: TradingInstrument,
@@ -581,7 +681,9 @@ export const generateTradePlan = (
   oneHourCandles: CandleData[],
   currentPrice: number,
   /** Optional real-time tick. Used ONLY for day-trade entry/stop/target geometry. */
-  livePrice: number | null = null
+  livePrice: number | null = null,
+  /** "Now" in UTC epoch seconds — decides which candles count as closed for the forex/gold strategy. */
+  nowEpoch: number = Math.floor(Date.now() / 1000)
 ): TradePlan => {
   const syntheticProfile = getSyntheticProfile(instrument);
   const pip = isSyntheticIndex(instrument) ? 0.01 : (instrument === 'USD/JPY' || instrument === 'GBP/JPY' ? 0.01 : instrument === 'XAU/USD' ? 0.01 : 0.0001);
@@ -861,7 +963,7 @@ export const generateTradePlan = (
     ...support.slice(0, 3),
   ].sort((a, b) => b.price - a.price);
   
-  return {
+  const plan: TradePlan = {
     pair: instrument,
     timestamp: new Date(),
     currentPrice,
@@ -1049,4 +1151,8 @@ export const generateTradePlan = (
     criticalInvalidation: direction === 'bullish' ? analysis.dailyStructure.lastSwingLow : analysis.dailyStructure.lastSwingHigh,
     atr4H: analysis.fourHourATR,
   };
+
+  return isSyntheticIndex(instrument)
+    ? plan
+    : applySmcStrategy(plan, fourHourCandles, oneHourCandles, atrPercentile, pip, nowEpoch);
 };

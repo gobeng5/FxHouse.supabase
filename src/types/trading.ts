@@ -6,7 +6,7 @@ export {
 } from '../../supabase/functions/_shared/analysis/core.ts';
 import type { TrendDirection, MarketPhase, PriceLevel, TradingInstrument } from '../../supabase/functions/_shared/analysis/core.ts';
 
-export type SetupType = 'trend_continuation' | 'reversal' | 'breakout' | 'range';
+export type SetupType = 'trend_continuation' | 'reversal' | 'breakout' | 'range' | 'smc_choch_fvg';
 
 export type ConfidenceLevel = 'excellent' | 'good' | 'marginal' | 'no_trade';
 
@@ -135,6 +135,8 @@ export interface TradeRecommendation {
   entryDriftAtr?: number;
   /** Day trades only: live tick drifted > 0.5x 1H ATR from the structural price */
   entryStale?: boolean;
+  /** SMC CHoCH + FVG only: close time (UTC epoch seconds) of the H1 candle that triggered the setup */
+  triggerCloseEpoch?: number;
 }
 
 export interface TradePlan {

@@ -6,6 +6,7 @@ import { getCurrentSessionInfo } from '@/lib/sessionUtils';
 
 import { resolveIntrabar, pipsBetween, pipSize, IntrabarCandle } from '@/lib/intrabarResolution';
 import { getSpread, appliedSpreadMultiplier, effectiveEntry as calcEffectiveEntry } from '@/lib/spreadConfig';
+import { SMC_SETUP_TYPE, resolutionStartEpoch } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
 
 
 export type CandleFetcher = (
@@ -191,6 +192,21 @@ export const useGeneratedSignals = () => {
     // Skip if direction is ranging
     if (recommendation.direction === 'ranging') {
       return null;
+    }
+
+    // An SMC setup belongs to one trigger candle. The app and the engine both see it
+    // for the whole hour, so skip it if this user already has a signal from that candle
+    // (the arbiter only blocks while the first one is still pending).
+    if (recommendation.setupType === SMC_SETUP_TYPE && recommendation.triggerCloseEpoch) {
+      const { data: existing, error: dupErr } = await supabase
+        .from('generated_signals')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('instrument', instrument)
+        .eq('setup_type', SMC_SETUP_TYPE)
+        .gte('generated_at', new Date(recommendation.triggerCloseEpoch * 1000).toISOString())
+        .limit(1);
+      if (dupErr || existing?.length) return null;
     }
 
     // --- Unified arbiter: the Postgres function `arbitrate_signal` is the single source
@@ -456,7 +472,7 @@ export const useGeneratedSignals = () => {
               takeProfit1: signal.take_profit_1,
               takeProfit2: signal.take_profit_2,
               takeProfit3: signal.take_profit_3,
-              generatedAtEpoch: Math.floor(new Date(signal.generated_at).getTime() / 1000),
+              generatedAtEpoch: resolutionStartEpoch(signal.setup_type, Math.floor(new Date(signal.generated_at).getTime() / 1000)),
               requiresFill: true,
               // Regime at generation time, not now — see spreadConfig.ts.
               spread: getSpread(signal.instrument),
@@ -553,7 +569,7 @@ export const useGeneratedSignals = () => {
             takeProfit1: signal.take_profit_1,
             takeProfit2: signal.take_profit_2,
             takeProfit3: signal.take_profit_3,
-            generatedAtEpoch: genEpoch,
+            generatedAtEpoch: resolutionStartEpoch(signal.setup_type, genEpoch),
             requiresFill: true,
             spread: getSpread(signal.instrument),
             spreadMultiplier:

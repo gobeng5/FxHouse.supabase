@@ -46,7 +46,10 @@ export const useTelegramAlert = () => {
 
   const sendSignalAlert = useCallback(async (signal: GeneratedSignal) => {
     if (!settings?.telegram_enabled || !settings?.telegram_bot_token || !settings?.telegram_chat_id) return;
-    if (signal.confidence < (settings.notify_min_confidence ?? 70)) return;
+    // SMC CHoCH + FVG is rule-based: a limit order with one target and no score,
+    // so the confidence threshold does not apply to it.
+    const isSmc = signal.setup_type === 'smc_choch_fvg';
+    if (!isSmc && signal.confidence < (settings.notify_min_confidence ?? 70)) return;
     if (settings.notify_instruments && settings.notify_instruments.length > 0) {
       if (!settings.notify_instruments.includes(signal.instrument)) return;
     }
@@ -61,15 +64,20 @@ export const useTelegramAlert = () => {
       `📊 *FX Swing Bot Signal*`,
       ``,
       `🏷 *${signal.instrument}* — ${direction}`,
-      `📈 Type: ${signal.trade_type.toUpperCase()}`,
-      `🎯 Confidence: ${signal.confidence}%`,
+      `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : signal.trade_type.toUpperCase()}`,
+      isSmc ? '' : `🎯 Confidence: ${signal.confidence}%`,
       ``,
       `▶️ Entry: \`${signal.entry_price}\``,
       `🛑 Stop Loss: \`${signal.stop_loss}\``,
-      `✅ TP1: \`${signal.take_profit_1}\``,
-      `✅ TP2: \`${signal.take_profit_2}\``,
-      `✅ TP3: \`${signal.take_profit_3}\``,
+      ...(isSmc
+        ? [`✅ Target: \`${signal.take_profit_2}\``]
+        : [
+            `✅ TP1: \`${signal.take_profit_1}\``,
+            `✅ TP2: \`${signal.take_profit_2}\``,
+            `✅ TP3: \`${signal.take_profit_3}\``,
+          ]),
       `📐 R:R: \`${rr.toFixed(1)}\``,
+      isSmc ? `⏳ Dropped if not filled within 24h` : '',
       ``,
       `🔒 Gate: ${gate}`,
       ``,
@@ -90,18 +98,25 @@ export const useTelegramAlert = () => {
       : 0;
 
     const gate = extractStructuralGate(rec.reasoning);
+    const isSmc = rec.setupType === 'smc_choch_fvg';
     const message = [
       `📊 *FxHouse Signal*`,
       ``,
       `🏷 *${pair}* — ${direction}`,
-      `📈 Type: ${rec.tradeType.toUpperCase()} | Setup: ${escapeMd(rec.setupType.replace('_', ' '))}`,
-      `🎯 Confidence: ${rec.confidence}%`,
+      isSmc
+        ? `📈 Type: SMC CHoCH + FVG (limit order)`
+        : `📈 Type: ${rec.tradeType.toUpperCase()} | Setup: ${escapeMd(rec.setupType.replace('_', ' '))}`,
+      isSmc ? '' : `🎯 Confidence: ${rec.confidence}%`,
       ``,
       `▶️ Entry: \`${rec.risk.entry.toFixed(decimals)}\``,
       `🛑 Stop Loss: \`${rec.risk.stopLoss.toFixed(decimals)}\``,
-      `✅ TP1: \`${rec.risk.takeProfit1.toFixed(decimals)}\``,
-      `✅ TP2: \`${rec.risk.takeProfit2.toFixed(decimals)}\``,
-      `✅ TP3: \`${rec.risk.takeProfit3.toFixed(decimals)}\``,
+      ...(isSmc
+        ? [`✅ Target: \`${rec.risk.takeProfit2.toFixed(decimals)}\``]
+        : [
+            `✅ TP1: \`${rec.risk.takeProfit1.toFixed(decimals)}\``,
+            `✅ TP2: \`${rec.risk.takeProfit2.toFixed(decimals)}\``,
+            `✅ TP3: \`${rec.risk.takeProfit3.toFixed(decimals)}\``,
+          ]),
       `📐 R:R: \`${rr.toFixed(1)}\``,
       `⏱ Hold: ${rec.holdingPeriod}`,
       ``,
