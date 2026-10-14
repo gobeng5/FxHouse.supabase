@@ -1904,12 +1904,18 @@ Deno.serve(async (req) => {
               synthetic_min_rr: settings.synthetic_min_rr,
               ignore_counter_trend: settings.ignore_counter_trend,
             });
-            let daySignal = generateDaySignal(instrument as TradingInstrument, daily, fourHour, fifteenMin, oneHour);
-            if (instrument === 'BOOM1000' && fourHour.length >= 200 && fifteenMin.length >= 60) {
-              const boomGem = evaluateBoom1000Momentum(fourHour, fifteenMin);
-              if (boomGem) {
-                daySignal = generateSelectiveGemSignal(boomGem, oneHour, Math.floor(Date.now() / 1000));
+            let daySignal: SignalOutput | null = null;
+            if (instrument === 'BOOM1000') {
+              // BOOM1000 day trades strictly use the validated Momentum Gem.
+              // If the 15M momentum cross + 4H trend setup is not present, no day signal is generated.
+              if (fourHour.length >= 200 && fifteenMin.length >= 60) {
+                const boomGem = evaluateBoom1000Momentum(fourHour, fifteenMin);
+                if (boomGem) {
+                  daySignal = generateSelectiveGemSignal(boomGem, oneHour, Math.floor(Date.now() / 1000));
+                }
               }
+            } else {
+              daySignal = generateDaySignal(instrument as TradingInstrument, daily, fourHour, fifteenMin, oneHour);
             }
             candidates = [swingSignal, daySignal];
           }

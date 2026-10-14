@@ -1148,37 +1148,64 @@ export const generateTradePlan = (
       },
     },
     dayTradeRecommendation: (() => {
-      if (instrument === 'BOOM1000' && safeFifteenMin.length >= 60 && fourHourCandles.length >= 200) {
-        const boomGem = evaluateBoom1000Momentum(fourHourCandles, safeFifteenMin);
-        if (boomGem) {
-          const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
-          const effectiveEntry = effectiveEntryWithSpread(boomGem.direction, boomGem.entry, spread);
-          return {
-            direction: boomGem.direction,
-            confidence: boomGem.confidence,
-            setupType: boomGem.setupType as any,
-            preferPendingOrder: false,
-            tradeType: 'day',
-            holdingPeriod: '15m to 4h',
-            reasoning: boomGem.reason,
-            confidenceBreakdown: boomGem.parameters as any,
-            risk: {
-              entry: boomGem.entry,
-              effectiveEntry,
-              spreadApplied: spread,
-              atrPercentile: atrPercentile ?? undefined,
-              spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
-              stopLoss: boomGem.stopLoss,
-              stopDistance: Math.round(Math.abs(effectiveEntry - boomGem.stopLoss) / pip),
-              riskPercent: 1,
-              takeProfit1: boomGem.takeProfit,
-              takeProfit2: boomGem.takeProfit,
-              takeProfit3: boomGem.takeProfit,
-              trailingStopLogic: 'None — fixed stop, single 2R target',
-              breakevenRule: 'None — fixed risk geometry',
-            },
-          };
+      if (instrument === 'BOOM1000') {
+        if (safeFifteenMin.length >= 60 && fourHourCandles.length >= 200) {
+          const boomGem = evaluateBoom1000Momentum(fourHourCandles, safeFifteenMin);
+          if (boomGem) {
+            const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
+            const effectiveEntry = effectiveEntryWithSpread(boomGem.direction, boomGem.entry, spread);
+            return {
+              direction: boomGem.direction,
+              confidence: boomGem.confidence,
+              setupType: boomGem.setupType as any,
+              preferPendingOrder: false,
+              tradeType: 'day',
+              holdingPeriod: '15m to 4h',
+              reasoning: boomGem.reason,
+              confidenceBreakdown: boomGem.parameters as any,
+              risk: {
+                entry: boomGem.entry,
+                effectiveEntry,
+                spreadApplied: spread,
+                atrPercentile: atrPercentile ?? undefined,
+                spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
+                stopLoss: boomGem.stopLoss,
+                stopDistance: Math.round(Math.abs(effectiveEntry - boomGem.stopLoss) / pip),
+                riskPercent: 1,
+                takeProfit1: boomGem.takeProfit,
+                takeProfit2: boomGem.takeProfit,
+                takeProfit3: boomGem.takeProfit,
+                trailingStopLogic: 'None — fixed stop, single 2R target',
+                breakevenRule: 'None — fixed risk geometry',
+              },
+            };
+          }
         }
+        // BOOM1000 day trading strictly requires the validated momentum setup.
+        // No unvalidated generic day trades are taken.
+        return {
+          direction: 'ranging' as TrendDirection,
+          confidence: 0,
+          setupType: 'range',
+          preferPendingOrder: false,
+          tradeType: 'day',
+          holdingPeriod: '—',
+          reasoning: 'BOOM1000 Day: No validated MTF momentum setup currently. Waiting for 4H EMA50/200 trend alignment with M15 EMA(8)/EMA(21) crossover.',
+          confidenceBreakdown: [],
+          risk: {
+            entry: currentPrice,
+            effectiveEntry: currentPrice,
+            spreadApplied: 0,
+            stopLoss: currentPrice,
+            stopDistance: 0,
+            riskPercent: 1,
+            takeProfit1: currentPrice,
+            takeProfit2: currentPrice,
+            takeProfit3: currentPrice,
+            trailingStopLogic: '—',
+            breakevenRule: '—',
+          },
+        };
       }
       const dayRec = generateDayTradeRecommendation(analysis, direction, currentPrice, pip, sessionAnalysis, decimals, syntheticProfile !== null, instrument, atrPercentile, findOrderBlocks(safeFifteenMin, '1H'), findFairValueGaps(safeFifteenMin, '1H'), livePrice);
       // CONFLICT PREVENTION: If day trade direction opposes swing direction, suppress the day trade signal
