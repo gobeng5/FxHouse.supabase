@@ -3,7 +3,11 @@ import { supabase } from '@/integrations/supabase/client';
 import { useUserSettings } from '@/hooks/useUserSettings';
 import { GeneratedSignal } from '@/hooks/useGeneratedSignals';
 import { TradeRecommendation as TradeRecType, TradingInstrument } from '@/types/trading';
+import { GEM_SETUP_TYPES } from '@/lib/selectiveGems';
 import { toast } from 'sonner';
+
+const isGemSetupType = (type?: string | null): boolean =>
+  typeof type === 'string' && Object.values(GEM_SETUP_TYPES).includes(type as any);
 
 // Strip Telegram Markdown special characters from plain text to avoid parse errors
 const escapeMd = (text: string): string =>
@@ -58,17 +62,19 @@ export const useTelegramAlert = () => {
 
   const sendSignalAlert = useCallback(async (signal: GeneratedSignal) => {
     if (!settings?.telegram_enabled || !settings?.telegram_bot_token || !settings?.telegram_chat_id) return;
-    // SMC CHoCH + FVG is rule-based: a limit order with one target and no score,
-    // so the confidence threshold does not apply to it.
+    // SMC CHoCH + FVG and Validated Gems are rule-based: the arbitrary confidence threshold does not apply.
     const isSmc = signal.setup_type === 'smc_choch_fvg';
-    if (!isSmc && signal.confidence < (settings.notify_min_confidence ?? 70)) return;
+    const isGem = isGemSetupType(signal.setup_type);
+    const isRuleBased = isSmc || isGem;
+    if (!isRuleBased && signal.confidence < (settings.notify_min_confidence ?? 70)) return;
     if (settings.notify_instruments && settings.notify_instruments.length > 0) {
       if (!settings.notify_instruments.includes(signal.instrument)) return;
     }
 
     const direction = signal.direction === 'bullish' ? '🟢 LONG' : '🔴 SHORT';
-    const rr = signal.entry_price && signal.stop_loss && signal.take_profit_2
-      ? Math.abs(signal.take_profit_2 - signal.entry_price) / Math.abs(signal.entry_price - signal.stop_loss)
+    const targetPrice = signal.take_profit_1 ?? signal.take_profit_2;
+    const rr = signal.entry_price && signal.stop_loss && targetPrice
+      ? Math.abs(targetPrice - signal.entry_price) / Math.abs(signal.entry_price - signal.stop_loss)
       : 0;
 
     const gate = extractStructuralGate(signal.reasoning || '');
@@ -76,20 +82,20 @@ export const useTelegramAlert = () => {
       `📊 *FX Swing Bot Signal*`,
       ``,
       `🏷 *${signal.instrument}* — ${direction}`,
-      `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : signal.trade_type.toUpperCase()}`,
+      `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : isGem ? `Validated Gem (${signal.setup_type.replace('gem_', '').replace('_', ' ')})` : signal.trade_type.toUpperCase()}`,
       isSmc ? '' : `🎯 Confidence: ${signal.confidence}%`,
       ``,
       `▶️ Entry: \`${signal.entry_price}\``,
       `🛑 Stop Loss: \`${signal.stop_loss}\``,
-      ...(isSmc
-        ? [`✅ Target: \`${signal.take_profit_2}\``]
+      ...(isSmc || isGem
+        ? [`✅ Target: \`${targetPrice}\``]
         : [
             `✅ TP1: \`${signal.take_profit_1}\``,
             `✅ TP2: \`${signal.take_profit_2}\``,
             `✅ TP3: \`${signal.take_profit_3}\``,
           ]),
       `📐 R:R: \`${rr.toFixed(1)}\``,
-      isSmc ? `⏳ Dropped if not filled within 24h` : '',
+      isSmc ? `⏳ Dropped if not filled within 24h` : isGem ? `⚡ Validated Gem Setup` : '',
       ...triggerLines(signal.confluence_breakdown),
       ``,
       `🔒 Gate: ${gate}`,
@@ -105,27 +111,31 @@ export const useTelegramAlert = () => {
   }, [settings, sendMessage]);
 
   const sendTradeRecommendation = useCallback(async (rec: TradeRecType, pair: TradingInstrument) => {
-    const decimals = pair === 'USD/JPY' ? 2 : 4;
+    const decimals = pair.includes('JPY') || pair === 'XAU/USD' || pair.startsWith('V') || pair.startsWith('BOOM') ? 2 : 4;
     const direction = rec.direction === 'bullish' ? '🟢 LONG' : rec.direction === 'bearish' ? '🔴 SHORT' : '⚠️ RANGING';
-    const rr = rec.direction !== 'ranging'
-      ? Math.abs(rec.risk.takeProfit2 - rec.risk.entry) / Math.abs(rec.risk.entry - rec.risk.stopLoss)
+    const isSmc = rec.setupType === 'smc_choch_fvg';
+    const isGem = isGemSetupType(rec.setupType);
+    const targetPrice = isSmc || isGem ? rec.risk.takeProfit1 : rec.risk.takeProfit2;
+    const rr = rec.direction !== 'ranging' && targetPrice
+      ? Math.abs(targetPrice - rec.risk.entry) / Math.abs(rec.risk.entry - rec.risk.stopLoss)
       : 0;
 
     const gate = extractStructuralGate(rec.reasoning);
-    const isSmc = rec.setupType === 'smc_choch_fvg';
     const message = [
       `📊 *FxHouse Signal*`,
       ``,
       `🏷 *${pair}* — ${direction}`,
       isSmc
         ? `📈 Type: SMC CHoCH + FVG (limit order)`
+        : isGem
+        ? `📈 Type: Validated Gem (${rec.setupType.replace('gem_', '').replace('_', ' ')})`
         : `📈 Type: ${rec.tradeType.toUpperCase()} | Setup: ${escapeMd(rec.setupType.replace('_', ' '))}`,
       isSmc ? '' : `🎯 Confidence: ${rec.confidence}%`,
       ``,
       `▶️ Entry: \`${rec.risk.entry.toFixed(decimals)}\``,
       `🛑 Stop Loss: \`${rec.risk.stopLoss.toFixed(decimals)}\``,
-      ...(isSmc
-        ? [`✅ Target: \`${rec.risk.takeProfit2.toFixed(decimals)}\``]
+      ...(isSmc || isGem
+        ? [`✅ Target: \`${targetPrice.toFixed(decimals)}\``]
         : [
             `✅ TP1: \`${rec.risk.takeProfit1.toFixed(decimals)}\``,
             `✅ TP2: \`${rec.risk.takeProfit2.toFixed(decimals)}\``,
