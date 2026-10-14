@@ -5,6 +5,13 @@ import type { TradingInstrument, TrendDirection } from '../_shared/analysis/core
 import { findOrderBlocks as findOrderBlocksShared, findFairValueGaps as findFairValueGapsShared, analyzeAsianSession } from '../_shared/analysis/smcAnalysis.ts';
 import type { OrderBlock, FairValueGap } from '../_shared/analysis/smcAnalysis.ts';
 import { evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../_shared/analysis/smcChochFvg.ts';
+import {
+  evaluateGbpJpyMomentum,
+  evaluateEurUsdZScore,
+  evaluateBoom1000Momentum,
+  GEM_SETUP_TYPES,
+  type SelectiveGemSetup,
+} from '../_shared/analysis/selectiveGems.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 
 const corsHeaders = {
@@ -87,6 +94,8 @@ const FOREX_INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'GBP/JPY'
 const ALL_INSTRUMENTS = [...FOREX_INSTRUMENTS, ...SYNTHETIC_INDICES];
 
 const isSyntheticIndex = (instrument: string) => SYNTHETIC_INDICES.includes(instrument);
+const isGemSetupType = (type?: string | null): boolean =>
+  typeof type === 'string' && Object.values(GEM_SETUP_TYPES).includes(type as any);
 const getPipValue = (instrument: string) => {
   if (isSyntheticIndex(instrument)) return 0.01;
   if (instrument === 'USD/JPY' || instrument === 'GBP/JPY') return 0.01;
@@ -145,33 +154,34 @@ async function sendTelegramSignalAlert(
   const direction = saved.direction === 'bullish' ? '🟢 LONG' : '🔴 SHORT';
 
   const rr =
-    saved.entry_price && saved.stop_loss && saved.take_profit_2
-      ? Math.abs(saved.take_profit_2 - saved.entry_price) /
+    saved.entry_price && saved.stop_loss && (saved.take_profit_1 ?? saved.take_profit_2)
+      ? Math.abs((saved.take_profit_1 ?? saved.take_profit_2) - saved.entry_price) /
         Math.abs(saved.entry_price - saved.stop_loss)
       : 0;
 
   const gate = extractStructuralGate(saved.reasoning || '');
   // SMC CHoCH + FVG is rule-based: a limit order with one target and no score.
   const isSmc = saved.setup_type === SMC_SETUP_TYPE;
+  const isGem = isGemSetupType(saved.setup_type);
 
   const message = [
     `📊 *FX Swing Bot Signal*`,
     ``,
     `🏷 *${saved.instrument}* — ${direction}`,
-    `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : saved.trade_type.toUpperCase()}`,
+    `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : isGem ? `Validated Gem (${saved.setup_type.replace('gem_', '').replace('_', ' ')})` : saved.trade_type.toUpperCase()}`,
     isSmc ? '' : `🎯 Confidence: ${saved.confidence}%`,
     ``,
     `▶️ Entry: \`${saved.entry_price}\``,
     `🛑 Stop Loss: \`${saved.stop_loss}\``,
-    ...(isSmc
-      ? [`✅ Target: \`${saved.take_profit_2}\``]
+    ...(isSmc || isGem
+      ? [`✅ Target: \`${saved.take_profit_1 ?? saved.take_profit_2}\``]
       : [
           `✅ TP1: \`${saved.take_profit_1}\``,
           `✅ TP2: \`${saved.take_profit_2}\``,
           `✅ TP3: \`${saved.take_profit_3}\``,
         ]),
     `📐 R:R: \`${rr.toFixed(1)}\``,
-    isSmc ? `⏳ Dropped if not filled within 24h` : '',
+    isSmc ? `⏳ Dropped if not filled within 24h` : isGem ? `⚡ Validated Gem Setup` : '',
     ...triggerLines(saved.confluence_breakdown),
     ``,
     `🔒 Gate: ${gate}`,
@@ -867,6 +877,41 @@ function generateSmcSignal(
   };
 }
 
+/**
+ * Selective Gems: rule-based validated strategies with positive forward expectancy.
+ */
+function generateSelectiveGemSignal(
+  gemSetup: SelectiveGemSetup,
+  oneHourCandles: CandleData[],
+  nowEpoch: number,
+): SignalOutput {
+  const closedOneHour = oneHourCandles.filter(c => c.epoch + 3600 <= nowEpoch);
+  const atrPercentile = computeAtrPercentile(closedOneHour, 14, 200);
+  const spread = getVolatilityAdjustedSpread(gemSetup.instrument, atrPercentile);
+  const effectiveEntry = effectiveEntryWithSpread(gemSetup.direction, gemSetup.entry, spread);
+
+  return {
+    instrument: gemSetup.instrument,
+    direction: gemSetup.direction,
+    entry_price: gemSetup.entry,
+    effective_entry: effectiveEntry,
+    spread_applied: spread,
+    atr_percentile_at_entry: atrPercentile,
+    spread_multiplier_applied: appliedSpreadMultiplier(gemSetup.instrument, atrPercentile),
+    stop_loss: gemSetup.stopLoss,
+    take_profit_1: gemSetup.takeProfit,
+    take_profit_2: gemSetup.takeProfit,
+    take_profit_3: gemSetup.takeProfit,
+    risk_reward_ratio: Math.abs(gemSetup.takeProfit - gemSetup.entry) / Math.abs(gemSetup.entry - gemSetup.stopLoss),
+    confidence: gemSetup.confidence,
+    trade_type: gemSetup.tradeType,
+    setup_type: gemSetup.setupType,
+    reasoning: gemSetup.reason,
+    confluence_breakdown: gemSetup.parameters,
+    confluence_score_total: gemSetup.parameters.length,
+    confluence_score_max: gemSetup.parameters.length,
+  };
+}
 
 function generateSignal(
   instrument: string,
@@ -1816,18 +1861,37 @@ Deno.serve(async (req) => {
           let candidates: (SignalOutput | null)[];
 
           if (isForex) {
-            // Forex and gold trade one strategy; it reads H4 and H1 only.
-            const [fourHour, oneHour] = await Promise.all([
+            // Forex and gold: SMC CHoCH + FVG primary; if no setup, evaluate validated Gems for GBP/JPY and EUR/USD
+            const fetches: Promise<CandleData[]>[] = [
               fetchCandles(symbol, 14400, 100),
               fetchCandles(symbol, 3600, 200),
-            ]);
-            candidates = [generateSmcSignal(instrument, fourHour, oneHour, Math.floor(Date.now() / 1000))];
+            ];
+            if (instrument === 'EUR/USD') {
+              fetches.push(fetchCandles(symbol, 86400, 250));
+            }
+            const fetched = await Promise.all(fetches);
+            const fourHour = fetched[0];
+            const oneHour = fetched[1];
+            const daily = fetched[2] ?? [];
+
+            const smc = generateSmcSignal(instrument, fourHour, oneHour, Math.floor(Date.now() / 1000));
+            let gemSignal: SignalOutput | null = null;
+            if (!smc) {
+              if (instrument === 'GBP/JPY') {
+                const gbpGem = evaluateGbpJpyMomentum(oneHour);
+                if (gbpGem) gemSignal = generateSelectiveGemSignal(gbpGem, oneHour, Math.floor(Date.now() / 1000));
+              } else if (instrument === 'EUR/USD' && daily.length >= 200) {
+                const eurGem = evaluateEurUsdZScore(daily, oneHour);
+                if (eurGem) gemSignal = generateSelectiveGemSignal(eurGem, oneHour, Math.floor(Date.now() / 1000));
+              }
+            }
+            candidates = [smc ?? gemSignal];
           } else {
             const [daily, fourHour, oneHour, fifteenMin] = await Promise.all([
               fetchCandles(symbol, 86400, 100),
-              fetchCandles(symbol, 14400, 100),
+              fetchCandles(symbol, 14400, 250),
               fetchCandles(symbol, 3600, 200),
-              fetchCandles(symbol, 900, 50),
+              fetchCandles(symbol, 900, 60),
             ]);
 
             if (daily.length < 50 || fourHour.length < 50) {
@@ -1840,7 +1904,13 @@ Deno.serve(async (req) => {
               synthetic_min_rr: settings.synthetic_min_rr,
               ignore_counter_trend: settings.ignore_counter_trend,
             });
-            const daySignal = generateDaySignal(instrument, daily, fourHour, fifteenMin, oneHour);
+            let daySignal = generateDaySignal(instrument as TradingInstrument, daily, fourHour, fifteenMin, oneHour);
+            if (instrument === 'BOOM1000' && fourHour.length >= 200 && fifteenMin.length >= 60) {
+              const boomGem = evaluateBoom1000Momentum(fourHour, fifteenMin);
+              if (boomGem) {
+                daySignal = generateSelectiveGemSignal(boomGem, oneHour, Math.floor(Date.now() / 1000));
+              }
+            }
             candidates = [swingSignal, daySignal];
           }
 
@@ -1851,10 +1921,12 @@ Deno.serve(async (req) => {
             if (!signal) continue;
             // The rule-based strategy has no score, so the confidence threshold does not apply to it.
             const isSmc = signal.setup_type === SMC_SETUP_TYPE;
-            if (!isSmc && signal.confidence < settings.notify_min_confidence) continue;
+            const isGem = isGemSetupType(signal.setup_type);
+            const isRuleBased = isSmc || isGem;
+            if (!isRuleBased && signal.confidence < settings.notify_min_confidence) continue;
 
-            // An SMC setup belongs to one trigger candle and stays visible for the whole
-            // hour (and to the web app too): never issue it twice for the same user.
+            // An SMC or Gem setup belongs to a closed candle and stays visible for the whole
+            // bar (and to the web app too): never issue it twice for the same user.
             if (isSmc && signal.trigger_close_epoch) {
               const { data: existing, error: dupErr } = await supabase
                 .from('generated_signals')
@@ -1863,6 +1935,18 @@ Deno.serve(async (req) => {
                 .eq('instrument', signal.instrument)
                 .eq('setup_type', SMC_SETUP_TYPE)
                 .gte('generated_at', new Date(signal.trigger_close_epoch * 1000).toISOString())
+                .limit(1);
+              if (dupErr) { errors.push(`${instrument}: duplicate check failed - ${dupErr.message}`); continue; }
+              if (existing?.length) continue;
+            } else if (isGem) {
+              const lookbackSeconds = signal.trade_type === 'day' ? 900 : 3600;
+              const { data: existing, error: dupErr } = await supabase
+                .from('generated_signals')
+                .select('id')
+                .eq('user_id', settings.user_id)
+                .eq('instrument', signal.instrument)
+                .eq('setup_type', signal.setup_type)
+                .gte('generated_at', new Date(Date.now() - lookbackSeconds * 1000).toISOString())
                 .limit(1);
               if (dupErr) { errors.push(`${instrument}: duplicate check failed - ${dupErr.message}`); continue; }
               if (existing?.length) continue;
@@ -1933,8 +2017,8 @@ Deno.serve(async (req) => {
 
             totalSignals++;
 
-            // Respect each user's own notify_min_confidence threshold for Telegram alerts.
-            if (savedSignal && (isSmc || signal.confidence >= (settings.notify_min_confidence ?? 70))) {
+            // Respect each user's own notify_min_confidence threshold for Telegram alerts (rule-based SMC & Gems always notify).
+            if (savedSignal && (isSmc || isGem || signal.confidence >= (settings.notify_min_confidence ?? 70))) {
               await sendTelegramSignalAlert(supabase, settings, savedSignal);
             }
 

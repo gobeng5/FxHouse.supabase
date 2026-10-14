@@ -63,6 +63,13 @@ import { computeSwingConfidence, SWING_CONFIDENCE_MAX } from '../../supabase/fun
 import { analyzeMarket } from '../../supabase/functions/_shared/analysis/marketAnalysis.ts';
 import type { AnalysisResult } from '../../supabase/functions/_shared/analysis/marketAnalysis.ts';
 import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
+import {
+  evaluateGbpJpyMomentum,
+  evaluateEurUsdZScore,
+  evaluateBoom1000Momentum,
+  GEM_SETUP_TYPES,
+  type SelectiveGemSetup,
+} from '../../supabase/functions/_shared/analysis/selectiveGems.ts';
 
 // Swing confidence is computed ONLY by the shared canonical module (also used by the signal engine).
 
@@ -582,6 +589,7 @@ const generateDayTradeRecommendation = (
  */
 const applySmcStrategy = (
   plan: TradePlan,
+  dailyCandles: CandleData[],
   fourHourCandles: CandleData[],
   oneHourCandles: CandleData[],
   atrPercentile: number | null,
@@ -615,6 +623,8 @@ const applySmcStrategy = (
   });
 
   let recommendation = noTrade('swing', `No setup this hour. ${reason}`);
+  let gemSetup: SelectiveGemSetup | null = null;
+
   if (setup) {
     const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
     const effectiveEntry = effectiveEntryWithSpread(setup.direction, setup.entry, spread);
@@ -646,22 +656,76 @@ const applySmcStrategy = (
         breakevenRule: 'None — the stop is not moved',
       },
     };
+  } else if (instrument === 'GBP/JPY') {
+    gemSetup = evaluateGbpJpyMomentum(oneHourCandles);
+  } else if (instrument === 'EUR/USD') {
+    gemSetup = evaluateEurUsdZScore(dailyCandles, oneHourCandles);
   }
 
+  if (!setup && gemSetup) {
+    const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
+    const effectiveEntry = effectiveEntryWithSpread(gemSetup.direction, gemSetup.entry, spread);
+    recommendation = {
+      direction: gemSetup.direction,
+      confidence: gemSetup.confidence,
+      setupType: gemSetup.setupType as any,
+      preferPendingOrder: false,
+      tradeType: 'swing',
+      holdingPeriod: '1-3 days',
+      reasoning: gemSetup.reason,
+      confidenceBreakdown: gemSetup.parameters as any,
+      risk: {
+        entry: gemSetup.entry,
+        effectiveEntry,
+        spreadApplied: spread,
+        atrPercentile: atrPercentile ?? undefined,
+        spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
+        stopLoss: gemSetup.stopLoss,
+        stopDistance: Math.round(Math.abs(effectiveEntry - gemSetup.stopLoss) / pip),
+        riskPercent: 1,
+        takeProfit1: gemSetup.takeProfit,
+        takeProfit2: gemSetup.takeProfit,
+        takeProfit3: gemSetup.takeProfit,
+        trailingStopLogic: 'None — fixed stop, single target',
+        breakevenRule: 'None — the stop is not moved',
+      },
+    };
+  }
+
+  const activeTrade = setup
+    ? {
+        entry: setup.entry,
+        stopLoss: setup.stopLoss,
+        takeProfit: setup.takeProfit,
+        direction: setup.direction,
+        label: 'Target (2R)',
+        entryDesc: `${setup.direction === 'bullish' ? 'Buy' : 'Sell'} limit entry (FVG midpoint)`,
+      }
+    : gemSetup
+      ? {
+          entry: gemSetup.entry,
+          stopLoss: gemSetup.stopLoss,
+          takeProfit: gemSetup.takeProfit,
+          direction: gemSetup.direction,
+          label: `Target (${(Math.abs(gemSetup.takeProfit - gemSetup.entry) / Math.abs(gemSetup.entry - gemSetup.stopLoss)).toFixed(1)}R)`,
+          entryDesc: `${gemSetup.direction === 'bullish' ? 'Buy' : 'Sell'} market entry (${gemSetup.setupType.replace('gem_', '').replace('_', ' ')})`,
+        }
+      : null;
+
   const structural = plan.keyLevels.filter(l => l.type === 'support' || l.type === 'resistance');
-  const keyLevels: PriceLevel[] = setup
+  const keyLevels: PriceLevel[] = activeTrade
     ? [
         ...structural,
-        { price: setup.takeProfit, type: 'take_profit' as const, description: 'Target (2R)', strength: 'strong' as const },
-        { price: setup.entry, type: 'entry' as const, description: `${setup.direction === 'bullish' ? 'Buy' : 'Sell'} limit entry (FVG midpoint)`, strength: 'strong' as const },
-        { price: setup.stopLoss, type: 'stop_loss' as const, description: 'Stop loss', strength: 'strong' as const },
+        { price: activeTrade.takeProfit, type: 'take_profit' as const, description: activeTrade.label, strength: 'strong' as const },
+        { price: activeTrade.entry, type: 'entry' as const, description: activeTrade.entryDesc, strength: 'strong' as const },
+        { price: activeTrade.stopLoss, type: 'stop_loss' as const, description: 'Stop loss', strength: 'strong' as const },
       ].sort((a, b) => b.price - a.price)
     : structural;
 
   return {
     ...plan,
     recommendation,
-    dayTradeRecommendation: noTrade('day', 'Day-trade signals are retired for forex and gold. These instruments trade one strategy, SMC CHoCH + FVG — see the main signal.'),
+    dayTradeRecommendation: noTrade('day', 'Day-trade signals are retired for forex and gold. These instruments trade SMC CHoCH + FVG or selective swing momentum — see the main signal.'),
     keyLevels,
     executionPlan: {
       ...plan.executionPlan,
@@ -669,7 +733,9 @@ const applySmcStrategy = (
         ...plan.executionPlan.preLondonChecklist.slice(0, -1),
         setup
           ? `Set ${setup.direction === 'bullish' ? 'buy' : 'sell'} limit at ${setup.entry.toFixed(decimals)}, stop ${setup.stopLoss.toFixed(decimals)}, target ${setup.takeProfit.toFixed(decimals)}`
-          : 'No SMC CHoCH + FVG setup this hour — no order to place',
+          : gemSetup
+            ? `Execute ${gemSetup.direction === 'bullish' ? 'BUY' : 'SELL'} at ${gemSetup.entry.toFixed(decimals)}, stop ${gemSetup.stopLoss.toFixed(decimals)}, target ${gemSetup.takeProfit.toFixed(decimals)}`
+            : 'No active swing setup this hour — no order to place',
       ],
     },
   };
@@ -1082,6 +1148,38 @@ export const generateTradePlan = (
       },
     },
     dayTradeRecommendation: (() => {
+      if (instrument === 'BOOM1000' && safeFifteenMin.length >= 60 && fourHourCandles.length >= 200) {
+        const boomGem = evaluateBoom1000Momentum(fourHourCandles, safeFifteenMin);
+        if (boomGem) {
+          const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
+          const effectiveEntry = effectiveEntryWithSpread(boomGem.direction, boomGem.entry, spread);
+          return {
+            direction: boomGem.direction,
+            confidence: boomGem.confidence,
+            setupType: boomGem.setupType as any,
+            preferPendingOrder: false,
+            tradeType: 'day',
+            holdingPeriod: '15m to 4h',
+            reasoning: boomGem.reason,
+            confidenceBreakdown: boomGem.parameters as any,
+            risk: {
+              entry: boomGem.entry,
+              effectiveEntry,
+              spreadApplied: spread,
+              atrPercentile: atrPercentile ?? undefined,
+              spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
+              stopLoss: boomGem.stopLoss,
+              stopDistance: Math.round(Math.abs(effectiveEntry - boomGem.stopLoss) / pip),
+              riskPercent: 1,
+              takeProfit1: boomGem.takeProfit,
+              takeProfit2: boomGem.takeProfit,
+              takeProfit3: boomGem.takeProfit,
+              trailingStopLogic: 'None — fixed stop, single 2R target',
+              breakevenRule: 'None — fixed risk geometry',
+            },
+          };
+        }
+      }
       const dayRec = generateDayTradeRecommendation(analysis, direction, currentPrice, pip, sessionAnalysis, decimals, syntheticProfile !== null, instrument, atrPercentile, findOrderBlocks(safeFifteenMin, '1H'), findFairValueGaps(safeFifteenMin, '1H'), livePrice);
       // CONFLICT PREVENTION: If day trade direction opposes swing direction, suppress the day trade signal
       if (direction !== 'ranging' && dayRec.direction !== 'ranging' && dayRec.direction !== direction) {
@@ -1156,5 +1254,5 @@ export const generateTradePlan = (
 
   return isSyntheticIndex(instrument)
     ? plan
-    : applySmcStrategy(plan, fourHourCandles, oneHourCandles, atrPercentile, pip, nowEpoch);
+    : applySmcStrategy(plan, dailyCandles, fourHourCandles, oneHourCandles, atrPercentile, pip, nowEpoch);
 };

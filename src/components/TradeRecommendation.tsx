@@ -67,9 +67,19 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
 
   // For ranging, show "NO TRADE" prominently
   const displayDirection = isRanging ? 'NO TRADE' : direction;
-  // Forex and gold: rule-based SMC CHoCH + FVG — one target, and a fixed backtest figure instead of a score.
-  const isSmc = setupType === 'smc_choch_fvg';
-  const displaySetup = isRanging ? 'Wait for clarity' : isSmc ? 'SMC CHoCH + FVG' : setupType.replace('_', ' ');
+  // Rule-based strategies (SMC or v2.1 selective gems) have fixed targets and checklists
+  const isSmc = setupType === 'smc_choch_fvg' || setupType.startsWith('gem_');
+  const displaySetup = isRanging
+    ? 'Wait for clarity'
+    : setupType === 'smc_choch_fvg'
+      ? 'SMC CHoCH + FVG'
+      : setupType === 'gem_gbpjpy_momentum'
+        ? 'GBP/JPY Momentum Swing'
+        : setupType === 'gem_eurusd_zscore'
+          ? 'EUR/USD MTF Z-Score'
+          : setupType === 'gem_boom1000_momentum'
+            ? 'BOOM1000 MTF Momentum'
+            : setupType.replace(/_/g, ' ');
 
   return (
     <div className="space-y-4">

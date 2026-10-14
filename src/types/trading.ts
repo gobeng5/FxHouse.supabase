@@ -6,7 +6,15 @@ export {
 } from '../../supabase/functions/_shared/analysis/core.ts';
 import type { TrendDirection, MarketPhase, PriceLevel, TradingInstrument } from '../../supabase/functions/_shared/analysis/core.ts';
 
-export type SetupType = 'trend_continuation' | 'reversal' | 'breakout' | 'range' | 'smc_choch_fvg';
+export type SetupType =
+  | 'trend_continuation'
+  | 'reversal'
+  | 'breakout'
+  | 'range'
+  | 'smc_choch_fvg'
+  | 'gem_gbpjpy_momentum'
+  | 'gem_eurusd_zscore'
+  | 'gem_boom1000_momentum';
 
 export type ConfidenceLevel = 'excellent' | 'good' | 'marginal' | 'no_trade';
 
