@@ -27,6 +27,7 @@
 import type { CandleData, TradingInstrument, TrendDirection } from './core.ts';
 import { getInstrumentDecimals } from './core.ts';
 import { calculateATR } from './indicators.ts';
+import { GEM_SETUP_TYPES } from './selectiveGems.ts';
 
 /** Stored in `generated_signals.setup_type`; identifies signals from this strategy. */
 export const SMC_SETUP_TYPE = 'smc_choch_fvg';
@@ -261,7 +262,10 @@ export function evaluateSmcChochFvg(
  * Where outcome replay starts for a stored signal. The app's wick resolver
  * skips the candle a signal was generated in; an SMC order is live from the
  * top of that hour (its trigger candle has just closed), and many fill within
- * it, so for this strategy the replay starts at the hour boundary.
+ * it, so for this strategy the replay starts at the hour boundary. The V75
+ * inside-bar gem is also a pending order issued just after the hour, so it
+ * starts there too.
  */
+const HOUR_START_TYPES: readonly string[] = [SMC_SETUP_TYPE, GEM_SETUP_TYPES.V75_INSIDEBAR];
 export const resolutionStartEpoch = (setupType: string | null | undefined, generatedAtEpoch: number): number =>
-  setupType === SMC_SETUP_TYPE ? Math.floor(generatedAtEpoch / H1_SECONDS) * H1_SECONDS : generatedAtEpoch;
+  setupType && HOUR_START_TYPES.includes(setupType) ? Math.floor(generatedAtEpoch / H1_SECONDS) * H1_SECONDS : generatedAtEpoch;

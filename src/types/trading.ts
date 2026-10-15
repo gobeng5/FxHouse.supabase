@@ -14,7 +14,8 @@ export type SetupType =
   | 'smc_choch_fvg'
   | 'gem_gbpjpy_momentum'
   | 'gem_eurusd_zscore'
-  | 'gem_boom1000_momentum';
+  | 'gem_boom1000_momentum'
+  | 'gem_v75_insidebar';
 
 export type ConfidenceLevel = 'excellent' | 'good' | 'marginal' | 'no_trade';
 

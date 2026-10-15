@@ -196,16 +196,16 @@ export const useGeneratedSignals = () => {
       return null;
     }
 
-    // An SMC setup belongs to one trigger candle. The app and the engine both see it
-    // for the whole hour, so skip it if this user already has a signal from that candle
-    // (the arbiter only blocks while the first one is still pending).
-    if (recommendation.setupType === SMC_SETUP_TYPE && recommendation.triggerCloseEpoch) {
+    // An SMC setup (or the V75 inside-bar gem) belongs to one trigger candle. The app and
+    // the engine both see it for the whole hour, so skip it if this user already has a
+    // signal from that candle (the arbiter only blocks while the first one is still pending).
+    if (recommendation.triggerCloseEpoch) {
       const { data: existing, error: dupErr } = await supabase
         .from('generated_signals')
         .select('id')
         .eq('user_id', user.id)
         .eq('instrument', instrument)
-        .eq('setup_type', SMC_SETUP_TYPE)
+        .eq('setup_type', recommendation.setupType)
         .gte('generated_at', new Date(recommendation.triggerCloseEpoch * 1000).toISOString())
         .limit(1);
       if (dupErr || existing?.length) return null;

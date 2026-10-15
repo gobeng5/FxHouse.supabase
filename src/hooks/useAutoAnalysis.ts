@@ -118,8 +118,8 @@ export const useAutoAnalysis = () => {
         getCandles(instrument, 86400, instrument === 'EUR/USD' ? 250 : 200),
         getCandles(instrument, 14400, 300),
         getCandles(instrument, 3600, 200),
-        // Only the BOOM1000 day-trade gem reads 15M candles.
-        instrument === 'BOOM1000' ? getCandles(instrument, 900, 300) : Promise.resolve([]),
+        // Only the BOOM1000 and V75 day-trade gems read 15M candles.
+        instrument === 'BOOM1000' || instrument === 'V75' ? getCandles(instrument, 900, 300) : Promise.resolve([]),
       ]);
       
       if (dailyCandles.length < 50 || fourHourCandles.length < 50 || oneHourCandles.length < 30) {

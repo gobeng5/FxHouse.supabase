@@ -5,6 +5,7 @@
  *   1. GBP/JPY Swing (Unfiltered Momentum) — H1 EMA8/21 cross + EMA50 alignment (+14.3R forward, PF 1.34)
  *   2. EUR/USD Swing (MTF Z-Score Mean Reversion) — D1 EMA50/200 bias + H1 Z-score/RSI (+5.0R forward, PF 1.25)
  *   3. BOOM1000 Day (MTF Momentum) — H4 EMA50/200 bias + M15 EMA8/21 cross (+20.6R full year, PF 1.06)
+ *   4. V75 Day (H4 inside-bar breakout, retest entry) — backtest/synthetic-pick-study.ts
  *
  * Runtime-neutral: relative `.ts` imports only (runs in both Vite and Deno).
  * Closed candles only: each gem drops candles still forming at `nowEpoch`, so
@@ -18,6 +19,7 @@ export const GEM_SETUP_TYPES = {
   GBPJPY_MOMENTUM: 'gem_gbpjpy_momentum',
   EURUSD_ZSCORE: 'gem_eurusd_zscore',
   BOOM1000_MOMENTUM: 'gem_boom1000_momentum',
+  V75_INSIDEBAR: 'gem_v75_insidebar',
 } as const;
 
 export interface GemParameter {
@@ -40,6 +42,10 @@ export interface SelectiveGemSetup {
   tradeType: 'swing' | 'day';
   reason: string;
   parameters: GemParameter[];
+  /** Close of the candle that completed the setup; the engine issues a setup once per trigger. */
+  triggerCloseEpoch?: number;
+  /** True when the entry is a pending order at `entry` rather than a market order. */
+  pendingEntry?: boolean;
 }
 
 const M15_SECONDS = 900;
@@ -284,3 +290,81 @@ export function evaluateBoom1000Momentum(
   };
 }
 
+/**
+ * Gem 4: V75 Day (H4 inside-bar breakout, retest entry)
+ * Setup: the H4 candle that closed at `from` sits inside the one before it (the mother).
+ * Breakout: in the 4 hours after `from`, the first closed 15M candle to trade through the
+ *   mother's high (long) or low (short). A side already beyond the first 15M open is not
+ *   armed, and a 15M candle that takes both sides voids the setup.
+ * Signal: issued within the hour after the breakout candle closes (the engine runs hourly),
+ *   as a pending order back at the broken level, live 4 hours like any day signal.
+ * Risk: SL = 2.0 * ATR(14, H1), TP = 4.0 * ATR (2R).
+ * Backtest, one year of Deriv V75 (synthetic-pick-study.ts, "pending at broken level"):
+ *   96 trades, 52% wins, +45.7R; none of 200 random-walk years at 75% volatility did as well.
+ *   backtest/v75-gem-parity.ts checks that this function reproduces those trades.
+ *   It was the best of several hundred rules tried, so treat it as unproven until it holds live.
+ */
+export function evaluateV75InsideBar(
+  h4Candles: CandleData[],
+  h1Candles: CandleData[],
+  m15Candles: CandleData[],
+  nowEpoch: number,
+): SelectiveGemSetup | null {
+  const h4 = closedOnly(h4Candles, H4_SECONDS, nowEpoch);
+  const h1 = closedOnly(h1Candles, H1_SECONDS, nowEpoch);
+  const m15 = closedOnly(m15Candles, M15_SECONDS, nowEpoch);
+  if (h4.length < 3 || h1.length < 15 || !m15.length) return null;
+
+  // The older inside bar first: its window ended at the last H4 close; the newest may still be open.
+  for (const j of [h4.length - 2, h4.length - 1]) {
+    const mother = h4[j - 1], inside = h4[j];
+    if (!(inside.high <= mother.high && inside.low >= mother.low)) continue;
+    const from = inside.epoch + H4_SECONDS;
+    const window = m15.filter(c => c.epoch >= from && c.epoch < from + H4_SECONDS);
+    if (!window.length || window[0].epoch !== from) continue;
+
+    const buyLive = window[0].open < mother.high, sellLive = window[0].open > mother.low;
+    let dir: 1 | -1 | 0 = 0, fillClose = 0;
+    for (const c of window) {
+      const up = buyLive && c.high >= mother.high, down = sellLive && c.low <= mother.low;
+      if (up && down) break;
+      if (up || down) { dir = up ? 1 : -1; fillClose = c.epoch + M15_SECONDS; break; }
+    }
+    // Issue only on the first hourly run after the breakout candle closed.
+    if (!dir || fillClose <= nowEpoch - H1_SECONDS) continue;
+
+    const atr = calculateATR(h1, 14);
+    if (atr <= 0) return null;
+    const direction = dir === 1 ? 'bullish' : 'bearish';
+    // Prices in V75 points to 2 decimals, as the alert and the broker show them.
+    const round2 = (v: number) => Math.round(v * 100) / 100;
+    const entry = round2(dir === 1 ? mother.high : mother.low);
+    const stopLoss = round2(entry - dir * 2 * atr);
+    const takeProfit = round2(entry + dir * 4 * atr);
+    const utc = (e: number) => new Date(e * 1000).toISOString().slice(11, 16);
+    const side = dir === 1 ? 'high' : 'low';
+
+    return {
+      instrument: 'V75',
+      direction,
+      entry,
+      stopLoss,
+      takeProfit,
+      atr,
+      confidence: 65,
+      setupType: GEM_SETUP_TYPES.V75_INSIDEBAR,
+      tradeType: 'day',
+      triggerCloseEpoch: fillClose,
+      pendingEntry: true,
+      reason: `V75 Inside-Bar Breakout: the H4 candle closed at ${utc(from)} UTC inside the one before it; 15M broke the mother ${side} ${entry.toFixed(2)} by ${utc(fillClose)} UTC. Pending order back at the broken level for 4h. Backtest +45.7R on 96 trades over one year; not yet proven live.`,
+      parameters: [
+        { label: 'Setup', value: `H4 inside bar closed ${utc(from)} UTC`, weight: 1, maxWeight: 1, contributing: true },
+        { label: 'Mother bar', value: `high ${mother.high.toFixed(2)} / low ${mother.low.toFixed(2)}`, weight: 1, maxWeight: 1, contributing: true },
+        { label: 'Breakout', value: `15M through the ${side} by ${utc(fillClose)} UTC`, weight: 1, maxWeight: 1, contributing: true },
+        { label: 'Entry', value: `Pending at ${entry.toFixed(2)}, live 4h`, weight: 1, maxWeight: 1, contributing: true },
+        { label: 'Risk Geometry', value: 'SL 2.0x ATR, TP 4.0x ATR (2:1 R:R)', weight: 1, maxWeight: 1, contributing: true },
+      ],
+    };
+  }
+  return null;
+}

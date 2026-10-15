@@ -9,6 +9,7 @@ import {
   evaluateGbpJpyMomentum,
   evaluateEurUsdZScore,
   evaluateBoom1000Momentum,
+  evaluateV75InsideBar,
   GEM_SETUP_TYPES,
   type SelectiveGemSetup,
 } from '../_shared/analysis/selectiveGems.ts';
@@ -163,13 +164,16 @@ async function sendTelegramSignalAlert(
   // SMC CHoCH + FVG is rule-based: a limit order with one target and no score.
   const isSmc = saved.setup_type === SMC_SETUP_TYPE;
   const isGem = isGemSetupType(saved.setup_type);
+  // The V75 inside-bar gem waits at the broken level, like the SMC limit order.
+  const isPendingGem = saved.setup_type === GEM_SETUP_TYPES.V75_INSIDEBAR;
 
   const message = [
     `📊 *FX Swing Bot Signal*`,
     ``,
     `🏷 *${saved.instrument}* — ${direction}`,
-    `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : isGem ? `Validated Gem (${saved.setup_type.replace('gem_', '').replace('_', ' ')})` : saved.trade_type.toUpperCase()}`,
-    isSmc ? '' : `🎯 Confidence: ${saved.confidence}%`,
+    `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : isPendingGem ? 'V75 Inside-Bar Breakout (pending order)' : isGem ? `Validated Gem (${saved.setup_type.replace('gem_', '').replace('_', ' ')})` : saved.trade_type.toUpperCase()}`,
+    // Gem confidence is a fixed number and the gate a default label, so gem alerts leave both out.
+    isSmc || isGem ? '' : `🎯 Confidence: ${saved.confidence}%`,
     ``,
     `▶️ Entry: \`${saved.entry_price}\``,
     `🛑 Stop Loss: \`${saved.stop_loss}\``,
@@ -181,10 +185,10 @@ async function sendTelegramSignalAlert(
           `✅ TP3: \`${saved.take_profit_3}\``,
         ]),
     `📐 R:R: \`${rr.toFixed(1)}\``,
-    isSmc ? `⏳ Dropped if not filled within 24h` : isGem ? `⚡ Validated Gem Setup` : '',
+    isSmc ? `⏳ Dropped if not filled within 24h` : isPendingGem ? `⏳ Dropped if not filled within 4h` : isGem ? `⚡ Validated Gem Setup` : '',
     ...triggerLines(saved.confluence_breakdown),
     ``,
-    `🔒 Gate: ${gate}`,
+    isGem ? '' : `🔒 Gate: ${gate}`,
     ``,
     // The checklist above already says everything the SMC reasoning sentence does.
     saved.reasoning && !isSmc ? `💡 ${escapeMd(saved.reasoning)}` : '',
@@ -910,6 +914,7 @@ function generateSelectiveGemSignal(
     confluence_breakdown: gemSetup.parameters,
     confluence_score_total: gemSetup.parameters.length,
     confluence_score_max: gemSetup.parameters.length,
+    trigger_close_epoch: gemSetup.triggerCloseEpoch,
   };
 }
 
@@ -1906,7 +1911,12 @@ Deno.serve(async (req) => {
               ignore_counter_trend: settings.ignore_counter_trend,
             });
             let daySignal: SignalOutput | null = null;
-            if (instrument === 'BOOM1000') {
+            if (instrument === 'V75') {
+              // V75 day trades come only from the inside-bar breakout gem.
+              const nowEpoch = Math.floor(Date.now() / 1000);
+              const v75Gem = evaluateV75InsideBar(fourHour, oneHour, fifteenMin, nowEpoch);
+              if (v75Gem) daySignal = generateSelectiveGemSignal(v75Gem, oneHour, nowEpoch);
+            } else if (instrument === 'BOOM1000') {
               // BOOM1000 day trades strictly use the validated Momentum Gem.
               // If the 15M momentum cross + 4H trend setup is not present, no day signal is generated.
               const nowEpoch = Math.floor(Date.now() / 1000);
@@ -1931,13 +1941,13 @@ Deno.serve(async (req) => {
 
             // An SMC or Gem setup belongs to a closed candle and stays visible for the whole
             // bar (and to the web app too): never issue it twice for the same user.
-            if (isSmc && signal.trigger_close_epoch) {
+            if (signal.trigger_close_epoch) {
               const { data: existing, error: dupErr } = await supabase
                 .from('generated_signals')
                 .select('id')
                 .eq('user_id', settings.user_id)
                 .eq('instrument', signal.instrument)
-                .eq('setup_type', SMC_SETUP_TYPE)
+                .eq('setup_type', signal.setup_type)
                 .gte('generated_at', new Date(signal.trigger_close_epoch * 1000).toISOString())
                 .limit(1);
               if (dupErr) { errors.push(`${instrument}: duplicate check failed - ${dupErr.message}`); continue; }

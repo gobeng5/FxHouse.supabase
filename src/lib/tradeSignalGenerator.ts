@@ -67,6 +67,7 @@ import {
   evaluateGbpJpyMomentum,
   evaluateEurUsdZScore,
   evaluateBoom1000Momentum,
+  evaluateV75InsideBar,
   GEM_SETUP_TYPES,
   type SelectiveGemSetup,
 } from '../../supabase/functions/_shared/analysis/selectiveGems.ts';
@@ -752,7 +753,7 @@ export const generateTradePlan = (
   livePrice: number | null = null,
   /** "Now" in UTC epoch seconds — decides which candles count as closed for the forex/gold strategy. */
   nowEpoch: number = Math.floor(Date.now() / 1000),
-  /** 15M candles. Only BOOM1000 uses them (its day-trade gem); other instruments may pass none. */
+  /** 15M candles. Only BOOM1000 and V75 use them (their day-trade gems); other instruments may pass none. */
   fifteenMinCandles: CandleData[] = []
 ): TradePlan => {
   const syntheticProfile = getSyntheticProfile(instrument);
@@ -1150,6 +1151,63 @@ export const generateTradePlan = (
       },
     },
     dayTradeRecommendation: (() => {
+      if (instrument === 'V75') {
+        // V75 day trades come only from the inside-bar breakout gem: a pending order at the broken level.
+        const v75Gem = evaluateV75InsideBar(fourHourCandles, oneHourCandles, fifteenMinCandles, nowEpoch);
+        if (v75Gem) {
+          const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
+          const effectiveEntry = effectiveEntryWithSpread(v75Gem.direction, v75Gem.entry, spread);
+          return {
+            direction: v75Gem.direction,
+            confidence: v75Gem.confidence,
+            setupType: GEM_SETUP_TYPES.V75_INSIDEBAR,
+            preferPendingOrder: true,
+            tradeType: 'day',
+            holdingPeriod: 'Pending 4h, then up to 48h',
+            reasoning: v75Gem.reason,
+            triggerCloseEpoch: v75Gem.triggerCloseEpoch,
+            confidenceBreakdown: v75Gem.parameters,
+            risk: {
+              entry: v75Gem.entry,
+              effectiveEntry,
+              spreadApplied: spread,
+              atrPercentile: atrPercentile ?? undefined,
+              spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
+              stopLoss: v75Gem.stopLoss,
+              stopDistance: Math.round(Math.abs(effectiveEntry - v75Gem.stopLoss) / pip),
+              riskPercent: 1,
+              takeProfit1: v75Gem.takeProfit,
+              takeProfit2: v75Gem.takeProfit,
+              takeProfit3: v75Gem.takeProfit,
+              trailingStopLogic: 'None — fixed stop, single 2R target',
+              breakevenRule: 'None — fixed risk geometry',
+            },
+          };
+        }
+        return {
+          direction: 'ranging' as TrendDirection,
+          confidence: 0,
+          setupType: 'range',
+          preferPendingOrder: true,
+          tradeType: 'day',
+          holdingPeriod: '—',
+          reasoning: 'V75 Day: no inside-bar breakout this hour. A setup needs an H4 candle inside the one before it, then a 15M break of the mother bar within 4 hours.',
+          confidenceBreakdown: [],
+          risk: {
+            entry: currentPrice,
+            effectiveEntry: currentPrice,
+            spreadApplied: 0,
+            stopLoss: currentPrice,
+            stopDistance: 0,
+            riskPercent: 1,
+            takeProfit1: currentPrice,
+            takeProfit2: currentPrice,
+            takeProfit3: currentPrice,
+            trailingStopLogic: '—',
+            breakevenRule: '—',
+          },
+        };
+      }
       if (instrument === 'BOOM1000') {
         const boomGem = evaluateBoom1000Momentum(fourHourCandles, fifteenMinCandles, nowEpoch);
         if (boomGem) {

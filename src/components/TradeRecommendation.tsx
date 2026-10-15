@@ -79,7 +79,9 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
           ? 'EUR/USD MTF Z-Score'
           : setupType === 'gem_boom1000_momentum'
             ? 'BOOM1000 MTF Momentum'
-            : setupType.replace(/_/g, ' ');
+            : setupType === 'gem_v75_insidebar'
+              ? 'V75 Inside-Bar Breakout'
+              : setupType.replace(/_/g, ' ');
 
   return (
     <div className="space-y-4">

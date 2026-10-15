@@ -65,6 +65,8 @@ export const useTelegramAlert = () => {
     // SMC CHoCH + FVG and Validated Gems are rule-based: the arbitrary confidence threshold does not apply.
     const isSmc = signal.setup_type === 'smc_choch_fvg';
     const isGem = isGemSetupType(signal.setup_type);
+    // The V75 inside-bar gem waits at the broken level, like the SMC limit order.
+    const isPendingGem = signal.setup_type === GEM_SETUP_TYPES.V75_INSIDEBAR;
     const isRuleBased = isSmc || isGem;
     if (!isRuleBased && signal.confidence < (settings.notify_min_confidence ?? 70)) return;
     if (settings.notify_instruments && settings.notify_instruments.length > 0) {
@@ -82,8 +84,9 @@ export const useTelegramAlert = () => {
       `📊 *FX Swing Bot Signal*`,
       ``,
       `🏷 *${signal.instrument}* — ${direction}`,
-      `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : isGem ? `Validated Gem (${signal.setup_type.replace('gem_', '').replace('_', ' ')})` : signal.trade_type.toUpperCase()}`,
-      isSmc ? '' : `🎯 Confidence: ${signal.confidence}%`,
+      `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : isPendingGem ? 'V75 Inside-Bar Breakout (pending order)' : isGem ? `Validated Gem (${signal.setup_type.replace('gem_', '').replace('_', ' ')})` : signal.trade_type.toUpperCase()}`,
+      // Gem confidence is a fixed number and the gate a default label, so gem alerts leave both out.
+      isSmc || isGem ? '' : `🎯 Confidence: ${signal.confidence}%`,
       ``,
       `▶️ Entry: \`${signal.entry_price}\``,
       `🛑 Stop Loss: \`${signal.stop_loss}\``,
@@ -95,10 +98,10 @@ export const useTelegramAlert = () => {
             `✅ TP3: \`${signal.take_profit_3}\``,
           ]),
       `📐 R:R: \`${rr.toFixed(1)}\``,
-      isSmc ? `⏳ Dropped if not filled within 24h` : isGem ? `⚡ Validated Gem Setup` : '',
+      isSmc ? `⏳ Dropped if not filled within 24h` : isPendingGem ? `⏳ Dropped if not filled within 4h` : isGem ? `⚡ Validated Gem Setup` : '',
       ...triggerLines(signal.confluence_breakdown),
       ``,
-      `🔒 Gate: ${gate}`,
+      isGem ? '' : `🔒 Gate: ${gate}`,
       ``,
       // The checklist above already says everything the SMC reasoning sentence does.
       signal.reasoning && !isSmc ? `💡 ${escapeMd(signal.reasoning)}` : '',
@@ -115,6 +118,7 @@ export const useTelegramAlert = () => {
     const direction = rec.direction === 'bullish' ? '🟢 LONG' : rec.direction === 'bearish' ? '🔴 SHORT' : '⚠️ RANGING';
     const isSmc = rec.setupType === 'smc_choch_fvg';
     const isGem = isGemSetupType(rec.setupType);
+    const isPendingGem = rec.setupType === GEM_SETUP_TYPES.V75_INSIDEBAR;
     const targetPrice = isSmc || isGem ? rec.risk.takeProfit1 : rec.risk.takeProfit2;
     const rr = rec.direction !== 'ranging' && targetPrice
       ? Math.abs(targetPrice - rec.risk.entry) / Math.abs(rec.risk.entry - rec.risk.stopLoss)
@@ -127,10 +131,12 @@ export const useTelegramAlert = () => {
       `🏷 *${pair}* — ${direction}`,
       isSmc
         ? `📈 Type: SMC CHoCH + FVG (limit order)`
+        : isPendingGem
+        ? `📈 Type: V75 Inside-Bar Breakout (pending order)`
         : isGem
         ? `📈 Type: Validated Gem (${rec.setupType.replace('gem_', '').replace('_', ' ')})`
         : `📈 Type: ${rec.tradeType.toUpperCase()} | Setup: ${escapeMd(rec.setupType.replace('_', ' '))}`,
-      isSmc ? '' : `🎯 Confidence: ${rec.confidence}%`,
+      isSmc || isGem ? '' : `🎯 Confidence: ${rec.confidence}%`,
       ``,
       `▶️ Entry: \`${rec.risk.entry.toFixed(decimals)}\``,
       `🛑 Stop Loss: \`${rec.risk.stopLoss.toFixed(decimals)}\``,
@@ -145,7 +151,7 @@ export const useTelegramAlert = () => {
       `⏱ Hold: ${rec.holdingPeriod}`,
       ...triggerLines(rec.confidenceBreakdown),
       ``,
-      `🔒 Gate: ${gate}`,
+      isGem ? '' : `🔒 Gate: ${gate}`,
       ``,
       `💡 ${escapeMd(rec.reasoning)}`,
       ``,
