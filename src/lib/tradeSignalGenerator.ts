@@ -657,9 +657,9 @@ const applySmcStrategy = (
       },
     };
   } else if (instrument === 'GBP/JPY') {
-    gemSetup = evaluateGbpJpyMomentum(oneHourCandles);
+    gemSetup = evaluateGbpJpyMomentum(oneHourCandles, nowEpoch);
   } else if (instrument === 'EUR/USD') {
-    gemSetup = evaluateEurUsdZScore(dailyCandles, oneHourCandles);
+    gemSetup = evaluateEurUsdZScore(dailyCandles, oneHourCandles, nowEpoch);
   }
 
   if (!setup && gemSetup) {
@@ -751,7 +751,9 @@ export const generateTradePlan = (
   /** Optional real-time tick. Used ONLY for day-trade entry/stop/target geometry. */
   livePrice: number | null = null,
   /** "Now" in UTC epoch seconds — decides which candles count as closed for the forex/gold strategy. */
-  nowEpoch: number = Math.floor(Date.now() / 1000)
+  nowEpoch: number = Math.floor(Date.now() / 1000),
+  /** 15M candles. Only BOOM1000 uses them (its day-trade gem); other instruments may pass none. */
+  fifteenMinCandles: CandleData[] = []
 ): TradePlan => {
   const syntheticProfile = getSyntheticProfile(instrument);
   const pip = isSyntheticIndex(instrument) ? 0.01 : (instrument === 'USD/JPY' || instrument === 'GBP/JPY' ? 0.01 : instrument === 'XAU/USD' ? 0.01 : 0.0001);
@@ -1149,37 +1151,35 @@ export const generateTradePlan = (
     },
     dayTradeRecommendation: (() => {
       if (instrument === 'BOOM1000') {
-        if (safeFifteenMin.length >= 60 && fourHourCandles.length >= 200) {
-          const boomGem = evaluateBoom1000Momentum(fourHourCandles, safeFifteenMin);
-          if (boomGem) {
-            const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
-            const effectiveEntry = effectiveEntryWithSpread(boomGem.direction, boomGem.entry, spread);
-            return {
-              direction: boomGem.direction,
-              confidence: boomGem.confidence,
-              setupType: boomGem.setupType as any,
-              preferPendingOrder: false,
-              tradeType: 'day',
-              holdingPeriod: '15m to 4h',
-              reasoning: boomGem.reason,
-              confidenceBreakdown: boomGem.parameters as any,
-              risk: {
-                entry: boomGem.entry,
-                effectiveEntry,
-                spreadApplied: spread,
-                atrPercentile: atrPercentile ?? undefined,
-                spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
-                stopLoss: boomGem.stopLoss,
-                stopDistance: Math.round(Math.abs(effectiveEntry - boomGem.stopLoss) / pip),
-                riskPercent: 1,
-                takeProfit1: boomGem.takeProfit,
-                takeProfit2: boomGem.takeProfit,
-                takeProfit3: boomGem.takeProfit,
-                trailingStopLogic: 'None — fixed stop, single 2R target',
-                breakevenRule: 'None — fixed risk geometry',
-              },
-            };
-          }
+        const boomGem = evaluateBoom1000Momentum(fourHourCandles, fifteenMinCandles, nowEpoch);
+        if (boomGem) {
+          const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
+          const effectiveEntry = effectiveEntryWithSpread(boomGem.direction, boomGem.entry, spread);
+          return {
+            direction: boomGem.direction,
+            confidence: boomGem.confidence,
+            setupType: boomGem.setupType as any,
+            preferPendingOrder: false,
+            tradeType: 'day',
+            holdingPeriod: '15m to 4h',
+            reasoning: boomGem.reason,
+            confidenceBreakdown: boomGem.parameters as any,
+            risk: {
+              entry: boomGem.entry,
+              effectiveEntry,
+              spreadApplied: spread,
+              atrPercentile: atrPercentile ?? undefined,
+              spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
+              stopLoss: boomGem.stopLoss,
+              stopDistance: Math.round(Math.abs(effectiveEntry - boomGem.stopLoss) / pip),
+              riskPercent: 1,
+              takeProfit1: boomGem.takeProfit,
+              takeProfit2: boomGem.takeProfit,
+              takeProfit3: boomGem.takeProfit,
+              trailingStopLogic: 'None — fixed stop, single 2R target',
+              breakevenRule: 'None — fixed risk geometry',
+            },
+          };
         }
         // BOOM1000 day trading strictly requires the validated momentum setup.
         // No unvalidated generic day trades are taken.

@@ -113,10 +113,13 @@ export const useAutoAnalysis = () => {
     const result = { swing: false, day: false, errors: [] as string[] };
     
     try {
-      const [dailyCandles, fourHourCandles, oneHourCandles] = await Promise.all([
-        getCandles(instrument, 86400, 200),
+      const [dailyCandles, fourHourCandles, oneHourCandles, fifteenMinCandles] = await Promise.all([
+        // The EUR/USD gem needs 200 closed daily candles; the fetch includes the forming one.
+        getCandles(instrument, 86400, instrument === 'EUR/USD' ? 250 : 200),
         getCandles(instrument, 14400, 300),
         getCandles(instrument, 3600, 200),
+        // Only the BOOM1000 day-trade gem reads 15M candles.
+        instrument === 'BOOM1000' ? getCandles(instrument, 900, 300) : Promise.resolve([]),
       ]);
       
       if (dailyCandles.length < 50 || fourHourCandles.length < 50 || oneHourCandles.length < 30) {
@@ -126,7 +129,7 @@ export const useAutoAnalysis = () => {
       
       const closedCandlePrice = fourHourCandles[Math.max(0, fourHourCandles.length - 2)]?.close;
       const currentPrice = closedCandlePrice ?? fourHourCandles[fourHourCandles.length - 1].close;
-      const plan = generateTradePlan(instrument, dailyCandles, fourHourCandles, oneHourCandles, currentPrice);
+      const plan = generateTradePlan(instrument, dailyCandles, fourHourCandles, oneHourCandles, currentPrice, null, undefined, fifteenMinCandles);
       
       // Check swing trade
       const pendingSwing = getPendingSignal(instrument, 'swing');

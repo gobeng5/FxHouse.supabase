@@ -114,10 +114,13 @@ export const useAnalysis = () => {
       }
 
       // ---- Cache miss or explicit force-refresh: fetch fresh candles ----
-      const [dailyCandles, fourHourCandles, oneHourCandles] = await Promise.all([
-        getCandles(selectedInstrument, 86400, 200),
+      const [dailyCandles, fourHourCandles, oneHourCandles, fifteenMinCandles] = await Promise.all([
+        // The EUR/USD gem needs 200 closed daily candles; the fetch includes the forming one.
+        getCandles(selectedInstrument, 86400, selectedInstrument === 'EUR/USD' ? 250 : 200),
         getCandles(selectedInstrument, 14400, 300),
         getCandles(selectedInstrument, 3600, 200),
+        // Only the BOOM1000 day-trade gem reads 15M candles.
+        selectedInstrument === 'BOOM1000' ? getCandles(selectedInstrument, 900, 300) : Promise.resolve([]),
       ]);
 
       if (dailyCandles.length < 50 || fourHourCandles.length < 50 || oneHourCandles.length < 30) {
@@ -135,7 +138,7 @@ export const useAnalysis = () => {
       // (SMC/BOS/CHoCH) analysis still runs off the closed-candle price.
       const liveTick = prices[selectedInstrument].price > 0 ? prices[selectedInstrument].price : null;
 
-      const plan = generateTradePlan(selectedInstrument, candlesToUse.daily, candlesToUse.fourHour, candlesToUse.oneHour, currentPrice, liveTick);
+      const plan = generateTradePlan(selectedInstrument, candlesToUse.daily, candlesToUse.fourHour, candlesToUse.oneHour, currentPrice, liveTick, undefined, fifteenMinCandles);
       setCachedSignal(selectedInstrument, plan, candlesToUse.daily, candlesToUse.fourHour, candlesToUse.oneHour);
 
       if (plan.recommendation.direction !== 'ranging') {

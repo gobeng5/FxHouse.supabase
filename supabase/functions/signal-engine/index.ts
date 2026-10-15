@@ -1812,7 +1812,6 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ success: true, from, ...result }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    
     // Get all users with auto_engine_enabled
     const { data: userSettings } = await supabase.from('user_settings').select('*').eq('auto_engine_enabled', true);
     
@@ -1874,15 +1873,16 @@ Deno.serve(async (req) => {
             const oneHour = fetched[1];
             const daily = fetched[2] ?? [];
 
-            const smc = generateSmcSignal(instrument, fourHour, oneHour, Math.floor(Date.now() / 1000));
+            const nowEpoch = Math.floor(Date.now() / 1000);
+            const smc = generateSmcSignal(instrument, fourHour, oneHour, nowEpoch);
             let gemSignal: SignalOutput | null = null;
             if (!smc) {
               if (instrument === 'GBP/JPY') {
-                const gbpGem = evaluateGbpJpyMomentum(oneHour);
-                if (gbpGem) gemSignal = generateSelectiveGemSignal(gbpGem, oneHour, Math.floor(Date.now() / 1000));
+                const gbpGem = evaluateGbpJpyMomentum(oneHour, nowEpoch);
+                if (gbpGem) gemSignal = generateSelectiveGemSignal(gbpGem, oneHour, nowEpoch);
               } else if (instrument === 'EUR/USD' && daily.length >= 200) {
-                const eurGem = evaluateEurUsdZScore(daily, oneHour);
-                if (eurGem) gemSignal = generateSelectiveGemSignal(eurGem, oneHour, Math.floor(Date.now() / 1000));
+                const eurGem = evaluateEurUsdZScore(daily, oneHour, nowEpoch);
+                if (eurGem) gemSignal = generateSelectiveGemSignal(eurGem, oneHour, nowEpoch);
               }
             }
             candidates = [smc ?? gemSignal];
@@ -1891,7 +1891,8 @@ Deno.serve(async (req) => {
               fetchCandles(symbol, 86400, 100),
               fetchCandles(symbol, 14400, 250),
               fetchCandles(symbol, 3600, 200),
-              fetchCandles(symbol, 900, 60),
+              // The BOOM1000 gem needs a long 15M history so EMA(50) is seeded as in the backtest.
+              fetchCandles(symbol, 900, instrument === 'BOOM1000' ? 300 : 60),
             ]);
 
             if (daily.length < 50 || fourHour.length < 50) {
@@ -1908,12 +1909,9 @@ Deno.serve(async (req) => {
             if (instrument === 'BOOM1000') {
               // BOOM1000 day trades strictly use the validated Momentum Gem.
               // If the 15M momentum cross + 4H trend setup is not present, no day signal is generated.
-              if (fourHour.length >= 200 && fifteenMin.length >= 60) {
-                const boomGem = evaluateBoom1000Momentum(fourHour, fifteenMin);
-                if (boomGem) {
-                  daySignal = generateSelectiveGemSignal(boomGem, oneHour, Math.floor(Date.now() / 1000));
-                }
-              }
+              const nowEpoch = Math.floor(Date.now() / 1000);
+              const boomGem = evaluateBoom1000Momentum(fourHour, fifteenMin, nowEpoch);
+              if (boomGem) daySignal = generateSelectiveGemSignal(boomGem, oneHour, nowEpoch);
             } else {
               daySignal = generateDaySignal(instrument as TradingInstrument, daily, fourHour, fifteenMin, oneHour);
             }

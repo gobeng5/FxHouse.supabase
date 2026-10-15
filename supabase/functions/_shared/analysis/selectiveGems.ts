@@ -7,7 +7,8 @@
  *   3. BOOM1000 Day (MTF Momentum) — H4 EMA50/200 bias + M15 EMA8/21 cross (+20.6R full year, PF 1.06)
  *
  * Runtime-neutral: relative `.ts` imports only (runs in both Vite and Deno).
- * Closed candles only: deterministic, reproducible inputs.
+ * Closed candles only: each gem drops candles still forming at `nowEpoch`, so
+ * a setup never rests on a cross that can repaint before the candle closes.
  */
 
 import type { CandleData, TradingInstrument, TrendDirection } from './core.ts';
@@ -40,6 +41,15 @@ export interface SelectiveGemSetup {
   reason: string;
   parameters: GemParameter[];
 }
+
+const M15_SECONDS = 900;
+const H1_SECONDS = 3600;
+const H4_SECONDS = 14400;
+const D1_SECONDS = 86400;
+
+/** Candles that have fully closed by `nowEpoch`. The still-forming candle can repaint, so it never decides a setup. */
+const closedOnly = (candles: CandleData[], seconds: number, nowEpoch: number): CandleData[] =>
+  candles.filter(c => c.epoch + seconds <= nowEpoch);
 
 /**
  * Calculates rolling Z-score: (close - SMA(period)) / StdDev(period)
@@ -81,7 +91,8 @@ function getEmaBias(closes: number[]): 1 | -1 | 0 {
  * Entry: EMA(8) crosses EMA(21) with close aligned with EMA(50)
  * Risk: SL = 1.2 * ATR(14), TP = 2.0 * ATR(14) (Reward:Risk = 1.67)
  */
-export function evaluateGbpJpyMomentum(oneHourCandles: CandleData[]): SelectiveGemSetup | null {
+export function evaluateGbpJpyMomentum(h1Candles: CandleData[], nowEpoch: number): SelectiveGemSetup | null {
+  const oneHourCandles = closedOnly(h1Candles, H1_SECONDS, nowEpoch);
   if (oneHourCandles.length < 60) return null;
 
   const closes = oneHourCandles.map(c => c.close);
@@ -145,9 +156,12 @@ export function evaluateGbpJpyMomentum(oneHourCandles: CandleData[]): SelectiveG
  * Risk: SL = 1.0 * ATR(14), TP = 1.6 * ATR(14) (Reward:Risk = 1.60)
  */
 export function evaluateEurUsdZScore(
-  dailyCandles: CandleData[],
-  oneHourCandles: CandleData[],
+  d1Candles: CandleData[],
+  h1Candles: CandleData[],
+  nowEpoch: number,
 ): SelectiveGemSetup | null {
+  const dailyCandles = closedOnly(d1Candles, D1_SECONDS, nowEpoch);
+  const oneHourCandles = closedOnly(h1Candles, H1_SECONDS, nowEpoch);
   if (dailyCandles.length < 200 || oneHourCandles.length < 50) return null;
 
   const dailyCloses = dailyCandles.map(c => c.close);
@@ -198,15 +212,19 @@ export function evaluateEurUsdZScore(
 
 /**
  * Gem 3: BOOM1000 Day (MTF Momentum)
- * Timeframe: M15 (with H4 filter)
+ * Timeframe: M15 (with H4 filter). Needs real 15M candles — at least 60 closed;
+ * pass ~300 so EMA(50) is well seeded and matches the backtest.
  * H4 Filter: Close > EMA50 & EMA200 (bullish) / Close < EMA50 & EMA200 (bearish)
  * Entry: M15 EMA(8) crosses EMA(21) with close aligned with EMA(50) in HTF direction
  * Risk: SL = 1.5 * ATR(14), TP = 3.0 * ATR(14) (Reward:Risk = 2.00)
  */
 export function evaluateBoom1000Momentum(
-  fourHourCandles: CandleData[],
-  fifteenMinCandles: CandleData[],
+  h4Candles: CandleData[],
+  m15Candles: CandleData[],
+  nowEpoch: number,
 ): SelectiveGemSetup | null {
+  const fourHourCandles = closedOnly(h4Candles, H4_SECONDS, nowEpoch);
+  const fifteenMinCandles = closedOnly(m15Candles, M15_SECONDS, nowEpoch);
   if (fourHourCandles.length < 200 || fifteenMinCandles.length < 60) return null;
 
   const h4Closes = fourHourCandles.map(c => c.close);
