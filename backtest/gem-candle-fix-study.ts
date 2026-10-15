@@ -76,7 +76,7 @@ interface Variant {
   evaluate: (s: Series, t: number) => SelectiveGemSetup | null;
 }
 
-const VARIANTS: Variant[] = [
+export const VARIANTS: Variant[] = [
   // ---- BOOM1000 day ----
   {
     name: 'BOOM1000 engine — current (forming bars, 60×15M)', instrument: 'BOOM1000', cadence: 3600,
@@ -114,7 +114,7 @@ const VARIANTS: Variant[] = [
   },
 ];
 
-function run(v: Variant, s: Series) {
+export function run(v: Variant, s: Series) {
   const m15 = s.m15;
   // Gems return null until they have enough history. Cron fires on the grid; the run lands a minute later.
   const start = Math.ceil((m15[0].epoch + 30 * 86400) / v.cadence) * v.cadence;
@@ -141,16 +141,20 @@ function run(v: Variant, s: Series) {
   return { signals, trades };
 }
 
-const raw = loadData(DATA_PATH);
-const results: Record<string, unknown>[] = [];
-for (const v of VARIANTS) {
-  const { series } = cleanSeries(raw[v.instrument]);
-  const { signals, trades } = run(v, series);
-  const all = stats(trades);
-  const train = stats(trades.filter(tr => tr.entryEpoch < FORWARD_SPLIT_EPOCH));
-  const fwd = stats(trades.filter(tr => tr.entryEpoch >= FORWARD_SPLIT_EPOCH));
-  console.log(`\n${v.name}\n  signals ${signals}\n  all     ${fmtStats(all)}\n  train   ${fmtStats(train)}\n  forward ${fmtStats(fwd)}`);
-  results.push({ name: v.name, instrument: v.instrument, cadenceSeconds: v.cadence, signals, all, train, forward: fwd });
+function main() {
+  const raw = loadData(DATA_PATH);
+  const results: Record<string, unknown>[] = [];
+  for (const v of VARIANTS) {
+    const { series } = cleanSeries(raw[v.instrument]);
+    const { signals, trades } = run(v, series);
+    const all = stats(trades);
+    const train = stats(trades.filter(tr => tr.entryEpoch < FORWARD_SPLIT_EPOCH));
+    const fwd = stats(trades.filter(tr => tr.entryEpoch >= FORWARD_SPLIT_EPOCH));
+    console.log(`\n${v.name}\n  signals ${signals}\n  all     ${fmtStats(all)}\n  train   ${fmtStats(train)}\n  forward ${fmtStats(fwd)}`);
+    results.push({ name: v.name, instrument: v.instrument, cadenceSeconds: v.cadence, signals, all, train, forward: fwd });
+  }
+  writeFileSync(OUT_PATH, JSON.stringify({ generatedAt: new Date().toISOString(), forwardSplit: '2026-05-01', results }, null, 2));
+  console.log(`\nSaved ${OUT_PATH}`);
 }
-writeFileSync(OUT_PATH, JSON.stringify({ generatedAt: new Date().toISOString(), forwardSplit: '2026-05-01', results }, null, 2));
-console.log(`\nSaved ${OUT_PATH}`);
+
+if (import.meta.main) main();

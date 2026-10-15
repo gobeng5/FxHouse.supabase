@@ -257,7 +257,7 @@ function runOneAtATime(instrument: string, s: Series, p: Params): Filled[] {
   return accepted;
 }
 
-function runInstrument(instrument: string, s: Series, p: Params): Filled[] {
+export function runInstrument(instrument: string, s: Series, p: Params): Filled[] {
   if ((p.orders ?? 'file') !== 'file') return runOneAtATime(instrument, s, p);
   const fills = setups(s, p).map(su => execute(instrument, s, su, p)).filter((t): t is Filled => t !== null)
     .sort((a, b) => a.entryEpoch - b.entryEpoch);
