@@ -68,6 +68,7 @@ import {
   evaluateEurUsdZScore,
   evaluateBoom1000Momentum,
   evaluateV75InsideBar,
+  evaluateV10DonchianMarubozu,
   GEM_SETUP_TYPES,
   type SelectiveGemSetup,
 } from '../../supabase/functions/_shared/analysis/selectiveGems.ts';
@@ -1151,6 +1152,63 @@ export const generateTradePlan = (
       },
     },
     dayTradeRecommendation: (() => {
+      if (instrument === 'V10') {
+        // V10 day trades come only from the Donchian marubozu gem: a market order at the signal candle's close.
+        const v10Gem = evaluateV10DonchianMarubozu(oneHourCandles, nowEpoch);
+        if (v10Gem) {
+          const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
+          const effectiveEntry = effectiveEntryWithSpread(v10Gem.direction, v10Gem.entry, spread);
+          return {
+            direction: v10Gem.direction,
+            confidence: v10Gem.confidence,
+            setupType: GEM_SETUP_TYPES.V10_DONCHIAN,
+            preferPendingOrder: false,
+            tradeType: 'day',
+            holdingPeriod: 'Up to 72h',
+            reasoning: v10Gem.reason,
+            triggerCloseEpoch: v10Gem.triggerCloseEpoch,
+            confidenceBreakdown: v10Gem.parameters,
+            risk: {
+              entry: v10Gem.entry,
+              effectiveEntry,
+              spreadApplied: spread,
+              atrPercentile: atrPercentile ?? undefined,
+              spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
+              stopLoss: v10Gem.stopLoss,
+              stopDistance: Math.round(Math.abs(effectiveEntry - v10Gem.stopLoss) / pip),
+              riskPercent: 1,
+              takeProfit1: v10Gem.takeProfit,
+              takeProfit2: v10Gem.takeProfit,
+              takeProfit3: v10Gem.takeProfit,
+              trailingStopLogic: 'None — fixed stop, single 2.5R target',
+              breakevenRule: 'None — fixed risk geometry',
+            },
+          };
+        }
+        return {
+          direction: 'ranging' as TrendDirection,
+          confidence: 0,
+          setupType: 'range',
+          preferPendingOrder: false,
+          tradeType: 'day',
+          holdingPeriod: '—',
+          reasoning: 'V10 Day: no Donchian marubozu breakout this hour. A setup needs an H1 candle with a 70% body and range of 0.8x ATR that closes beyond the last 20 hours.',
+          confidenceBreakdown: [],
+          risk: {
+            entry: currentPrice,
+            effectiveEntry: currentPrice,
+            spreadApplied: 0,
+            stopLoss: currentPrice,
+            stopDistance: 0,
+            riskPercent: 1,
+            takeProfit1: currentPrice,
+            takeProfit2: currentPrice,
+            takeProfit3: currentPrice,
+            trailingStopLogic: '—',
+            breakevenRule: '—',
+          },
+        };
+      }
       if (instrument === 'V75') {
         // V75 day trades come only from the inside-bar breakout gem: a pending order at the broken level.
         const v75Gem = evaluateV75InsideBar(fourHourCandles, oneHourCandles, fifteenMinCandles, nowEpoch);
@@ -1336,6 +1394,38 @@ export const generateTradePlan = (
     criticalInvalidation: direction === 'bullish' ? analysis.dailyStructure.lastSwingLow : analysis.dailyStructure.lastSwingHigh,
     atr4H: analysis.fourHourATR,
   };
+
+  if (instrument === 'V75') {
+    // V75 trades only the inside-bar breakout gem (the day trade); the scored swing is switched off.
+    return {
+      ...plan,
+      recommendation: {
+        direction: 'ranging',
+        confidence: 0,
+        setupType: 'range',
+        preferPendingOrder: true,
+        tradeType: 'swing',
+        holdingPeriod: '—',
+        reasoning: 'Swing signals are retired for V75. It trades one strategy, the inside-bar breakout — see the day-trade signal.',
+        risk: {
+          entry: currentPrice,
+          stopLoss: currentPrice,
+          stopDistance: 0,
+          riskPercent: 1,
+          takeProfit1: currentPrice,
+          takeProfit2: currentPrice,
+          takeProfit3: currentPrice,
+          trailingStopLogic: '—',
+          breakevenRule: '—',
+        },
+      },
+      keyLevels: plan.keyLevels.filter(l => l.type === 'support' || l.type === 'resistance'),
+      executionPlan: {
+        ...plan.executionPlan,
+        preLondonChecklist: [...plan.executionPlan.preLondonChecklist.slice(0, -1), 'No swing order for V75 — see the day-trade signal'],
+      },
+    };
+  }
 
   return isSyntheticIndex(instrument)
     ? plan

@@ -6,6 +6,7 @@
  *   2. EUR/USD Swing (MTF Z-Score Mean Reversion) — D1 EMA50/200 bias + H1 Z-score/RSI (+5.0R forward, PF 1.25)
  *   3. BOOM1000 Day (MTF Momentum) — H4 EMA50/200 bias + M15 EMA8/21 cross (+20.6R full year, PF 1.06)
  *   4. V75 Day (H4 inside-bar breakout, retest entry) — backtest/synthetic-pick-study.ts
+ *   5. V10 Day (H1 Donchian marubozu breakout) — backtest/synthetic-pick-study.ts
  *
  * Runtime-neutral: relative `.ts` imports only (runs in both Vite and Deno).
  * Closed candles only: each gem drops candles still forming at `nowEpoch`, so
@@ -20,6 +21,7 @@ export const GEM_SETUP_TYPES = {
   EURUSD_ZSCORE: 'gem_eurusd_zscore',
   BOOM1000_MOMENTUM: 'gem_boom1000_momentum',
   V75_INSIDEBAR: 'gem_v75_insidebar',
+  V10_DONCHIAN: 'gem_v10_donchian',
 } as const;
 
 export interface GemParameter {
@@ -367,4 +369,63 @@ export function evaluateV75InsideBar(
     };
   }
   return null;
+}
+
+/**
+ * Gem 5: V10 Day (H1 Donchian marubozu breakout)
+ * Setup: the last closed H1 candle has range >= 0.8 * ATR(14, H1) and body >= 70% of range,
+ *   and closes beyond the high (long, green candle) or low (short, red candle) of the 20 before it.
+ * Signal: issued within the hour after that candle closes (the engine runs hourly), as a market
+ *   order at its close.
+ * Risk: SL = 1.5 * ATR, TP = 2.5R (3.75 * ATR); the research closed trades still open after 72h.
+ * Backtest, one year of Deriv V10 (synthetic-pick-study.ts): 302 trades, +49.2R, t 1.72;
+ *   13 of 200 random-walk years at 10% volatility did as well, so the edge is weaker than V75's.
+ *   backtest/v10-gem-parity.ts checks that this function reproduces those trades.
+ */
+export function evaluateV10DonchianMarubozu(h1Candles: CandleData[], nowEpoch: number): SelectiveGemSetup | null {
+  const h1 = closedOnly(h1Candles, H1_SECONDS, nowEpoch);
+  if (h1.length < 22) return null;
+  const i = h1.length - 1;
+  const c = h1[i];
+  const closeEpoch = c.epoch + H1_SECONDS;
+  // Issue only on the first hourly run after the signal candle closed.
+  if (closeEpoch <= nowEpoch - H1_SECONDS) return null;
+
+  const atr = calculateATR(h1, 14);
+  if (atr <= 0) return null;
+  const range = c.high - c.low, body = Math.abs(c.close - c.open);
+  if (range < 0.8 * atr || body / range < 0.7) return null;
+
+  let hi = -Infinity, lo = Infinity;
+  for (let k = 1; k <= 20; k++) { hi = Math.max(hi, h1[i - k].high); lo = Math.min(lo, h1[i - k].low); }
+  const dir: 1 | -1 | 0 = c.close > hi && c.close > c.open ? 1 : c.close < lo && c.close < c.open ? -1 : 0;
+  if (!dir) return null;
+
+  const direction = dir === 1 ? 'bullish' : 'bearish';
+  const round2 = (v: number) => Math.round(v * 100) / 100;
+  const entry = c.close;
+  const stopLoss = round2(entry - dir * 1.5 * atr);
+  const takeProfit = round2(entry + dir * 3.75 * atr);
+  const utc = (e: number) => new Date(e * 1000).toISOString().slice(11, 16);
+  const side = dir === 1 ? 'high' : 'low';
+
+  return {
+    instrument: 'V10',
+    direction,
+    entry,
+    stopLoss,
+    takeProfit,
+    atr,
+    confidence: 65,
+    setupType: GEM_SETUP_TYPES.V10_DONCHIAN,
+    tradeType: 'day',
+    triggerCloseEpoch: closeEpoch,
+    reason: `V10 Donchian Marubozu: the H1 candle closed at ${utc(closeEpoch)} UTC with a ${Math.round((body / range) * 100)}% body beyond the 20-hour ${side} ${(dir === 1 ? hi : lo).toFixed(2)}. Market entry at its close. Backtest +49.2R on 302 trades over one year; not yet proven live.`,
+    parameters: [
+      { label: 'Signal candle', value: `H1 closed ${utc(closeEpoch)} UTC`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Marubozu', value: `range ${(range / atr).toFixed(2)}x ATR, body ${Math.round((body / range) * 100)}%`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Breakout', value: `close beyond the 20-hour ${side} ${(dir === 1 ? hi : lo).toFixed(2)}`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Risk Geometry', value: 'SL 1.5x ATR, TP 3.75x ATR (2.5:1 R:R)', weight: 1, maxWeight: 1, contributing: true },
+    ],
+  };
 }

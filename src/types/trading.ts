@@ -15,7 +15,8 @@ export type SetupType =
   | 'gem_gbpjpy_momentum'
   | 'gem_eurusd_zscore'
   | 'gem_boom1000_momentum'
-  | 'gem_v75_insidebar';
+  | 'gem_v75_insidebar'
+  | 'gem_v10_donchian';
 
 export type ConfidenceLevel = 'excellent' | 'good' | 'marginal' | 'no_trade';
 

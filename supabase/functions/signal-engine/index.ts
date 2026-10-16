@@ -10,6 +10,7 @@ import {
   evaluateEurUsdZScore,
   evaluateBoom1000Momentum,
   evaluateV75InsideBar,
+  evaluateV10DonchianMarubozu,
   GEM_SETUP_TYPES,
   type SelectiveGemSetup,
 } from '../_shared/analysis/selectiveGems.ts';
@@ -1905,13 +1906,19 @@ Deno.serve(async (req) => {
               continue;
             }
 
-            const swingSignal = generateSignal(instrument, daily, fourHour, fifteenMin, oneHour, {
+            // V75 trades only its inside-bar gem, so it has no scored swing signal.
+            const swingSignal = instrument === 'V75' ? null : generateSignal(instrument, daily, fourHour, fifteenMin, oneHour, {
               forex_min_rr: settings.forex_min_rr,
               synthetic_min_rr: settings.synthetic_min_rr,
               ignore_counter_trend: settings.ignore_counter_trend,
             });
             let daySignal: SignalOutput | null = null;
-            if (instrument === 'V75') {
+            if (instrument === 'V10') {
+              // V10 day trades come only from the Donchian marubozu gem.
+              const nowEpoch = Math.floor(Date.now() / 1000);
+              const v10Gem = evaluateV10DonchianMarubozu(oneHour, nowEpoch);
+              if (v10Gem) daySignal = generateSelectiveGemSignal(v10Gem, oneHour, nowEpoch);
+            } else if (instrument === 'V75') {
               // V75 day trades come only from the inside-bar breakout gem.
               const nowEpoch = Math.floor(Date.now() / 1000);
               const v75Gem = evaluateV75InsideBar(fourHour, oneHour, fifteenMin, nowEpoch);

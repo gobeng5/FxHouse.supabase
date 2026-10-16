@@ -81,7 +81,9 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
             ? 'BOOM1000 MTF Momentum'
             : setupType === 'gem_v75_insidebar'
               ? 'V75 Inside-Bar Breakout'
-              : setupType.replace(/_/g, ' ');
+              : setupType === 'gem_v10_donchian'
+                ? 'V10 Donchian Marubozu'
+                : setupType.replace(/_/g, ' ');
 
   return (
     <div className="space-y-4">

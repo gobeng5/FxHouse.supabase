@@ -128,7 +128,7 @@ export function insideBarHourly(instrument: string, s: Series, mode: 'market' | 
 }
 
 // =================== STRATEGY 2: V10 Donchian marubozu breakout ===================
-function donchianMarubozu(instrument: string, s: Series): Trade[] {
+export function donchianMarubozu(instrument: string, s: Series): Trade[] {
   const h1 = s.h1;
   const atr = atrSeries(h1, 14);
   const spread = getVolatilityAdjustedSpread(instrument as never, null);
