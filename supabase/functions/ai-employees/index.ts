@@ -1,4 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
+import { evaluateLiveSetups, LIVE_INSTRUMENTS } from '../_shared/analysis/liveStrategies.ts';
+import type { LiveCandles } from '../_shared/analysis/liveStrategies.ts';
+import { maxHoldHours } from '../_shared/analysis/holdLimits.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -129,6 +132,41 @@ async function runKofi(supabase: ReturnType<typeof createClient>) {
 
 // --- Ama: signal-engine job + Telegram delivery QA ---
 const AMA_LOOKBACK_HOURS = 24;
+// Hourly engine runs Ama replays against the live rules (the 6h between her runs).
+const AMA_REPLAY_HOURS = 6;
+
+const DERIV_SYMBOLS: Record<string, string> = {
+  'EUR/USD': 'frxEURUSD', 'GBP/USD': 'frxGBPUSD', 'USD/JPY': 'frxUSDJPY', 'AUD/USD': 'frxAUDUSD',
+  'GBP/JPY': 'frxGBPJPY', 'XAU/USD': 'frxXAUUSD', V10: 'R_10', V75: 'R_75',
+};
+
+/** Recent candles for each live instrument from Deriv's public feed, one socket for all requests. */
+async function fetchLiveCandles(): Promise<Map<string, LiveCandles>> {
+  const ws = new WebSocket('wss://api.derivws.com/trading/v1/options/ws/public');
+  const pending = new Map<number, (d: any) => void>();
+  ws.onmessage = (e: MessageEvent) => { const d = JSON.parse(String(e.data)); pending.get(d.req_id)?.(d); pending.delete(d.req_id); };
+  await new Promise<void>((resolve, reject) => { ws.onopen = () => resolve(); ws.onerror = () => reject(new Error('Deriv connection failed')); });
+  let id = 0;
+  const get = (symbol: string, granularity: number, count: number) => new Promise<any[]>((resolve, reject) => {
+    const req = ++id;
+    const timer = setTimeout(() => reject(new Error(`Deriv timeout for ${symbol}`)), 15000);
+    pending.set(req, d => { clearTimeout(timer); d.error ? reject(new Error(`${symbol}: ${d.error.message}`)) : resolve(d.candles ?? []); });
+    ws.send(JSON.stringify({ ticks_history: symbol, adjust_start_time: 1, count, end: 'latest', granularity, style: 'candles', req_id: req }));
+  });
+  try {
+    const out = new Map<string, LiveCandles>();
+    for (const inst of LIVE_INSTRUMENTS) {
+      const s = DERIV_SYMBOLS[inst];
+      // Generous windows: the replay asks what the rules should have produced, so a
+      // too-short engine fetch shows up as a miss instead of being reproduced.
+      const [d1, h4, h1, m15] = await Promise.all([get(s, 86400, 400), get(s, 14400, 400), get(s, 3600, 500), get(s, 900, 500)]);
+      out.set(inst, { d1, h4, h1, m15 });
+    }
+    return out;
+  } finally {
+    try { ws.close(); } catch { /* noop */ }
+  }
+}
 
 type TelegramSettings = { telegram_enabled?: boolean; telegram_bot_token?: string; telegram_chat_id?: string } | null;
 
@@ -170,7 +208,7 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
 
     const { data: settingsRows, error: setErr } = await supabase
       .from('user_settings')
-      .select('user_id, telegram_enabled, telegram_bot_token, telegram_chat_id, notify_min_confidence');
+      .select('user_id, telegram_enabled, telegram_bot_token, telegram_chat_id, notify_min_confidence, auto_engine_enabled, signals_paused, notify_instruments');
 
     if (setErr) throw setErr;
 
@@ -205,9 +243,9 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
     // and confidence >= their notify_min_confidence (default 70). Uses the
     // CURRENT threshold, so a threshold changed inside the window can mislabel.
     const telegramReady = (u: any) => !!(u?.telegram_enabled && u.telegram_bot_token && u.telegram_chat_id);
-    // Forex/gold SMC CHoCH + FVG signals are rule-based and always alerted, whatever the threshold.
+    // Rule-based signals (SMC CHoCH + FVG and the gems) are always alerted, whatever the threshold.
     const meetsThreshold = (s: any) =>
-      s.setup_type === 'smc_choch_fvg' ||
+      s.setup_type === 'smc_choch_fvg' || String(s.setup_type ?? '').startsWith('gem_') ||
       Number(s.confidence) >= (settingsByUser.get(s.user_id)?.notify_min_confidence ?? 70);
 
     const shouldPush = (signals ?? []).filter((s: any) => telegramReady(settingsByUser.get(s.user_id)) && meetsThreshold(s));
@@ -231,7 +269,60 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
       ? cron.failed_24h + cron.http_timed_out + cron.http_failed + cron.http_missing + cron.http_with_errors
       : 0;
     const jobConcern = !!cronErr || !cron || !cron.job_active || cron.fired_24h < 23;
-    const problemCount = cronProblems + missed.length + weekendForexLeaks.length;
+    // ---- Expected vs saved: replay the last hourly runs with the live rules ----
+    // A strategy that silently stops firing (a short candle fetch, a broken gate)
+    // still lets the job run and Telegram deliver, so only this check catches it.
+    const engineUsers = (settingsRows ?? []).filter((u: any) => u.auto_engine_enabled && !u.signals_paused);
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    const lastRun = Math.floor((nowEpoch - 120) / 3600) * 3600; // a run needs ~2 min to finish
+    const runs = Array.from({ length: AMA_REPLAY_HOURS }, (_, k) => lastRun - k * 3600);
+    const missedSetups: string[] = [];
+    let expectedSetups = 0, slotBusy = 0;
+    let replayError: string | null = null;
+    try {
+      const candles = await fetchLiveCandles();
+      const { data: rows, error: rowsErr } = await supabase
+        .from('generated_signals')
+        .select('user_id, instrument, setup_type, outcome, generated_at, closed_at')
+        .gte('generated_at', new Date((runs[runs.length - 1] - 14 * 86400) * 1000).toISOString());
+      if (rowsErr) throw rowsErr;
+      const at = (iso: string | null) => (iso ? Math.floor(new Date(iso).getTime() / 1000) : 0);
+      for (const run of runs) {
+        for (const inst of LIVE_INSTRUMENTS) {
+          const c = candles.get(inst)!;
+          const upTo = (arr: any[]) => arr.filter(k => k.epoch <= run + 5);
+          const setup = evaluateLiveSetups(inst, { d1: upTo(c.d1), h4: upTo(c.h4), h1: upTo(c.h1), m15: upTo(c.m15) }, run + 5);
+          if (!setup) continue;
+          for (const u of engineUsers) {
+            if (u.notify_instruments?.length && !u.notify_instruments.includes(inst)) continue;
+            expectedSetups++;
+            const mine = (rows ?? []).filter((r: any) => r.user_id === u.user_id && r.instrument === inst);
+            // Saved in this run, or in the run before (the engine skips a repeat of the same setup).
+            const saved = mine.some((r: any) => r.setup_type === setup.setupType && at(r.generated_at) >= run - 3600 && at(r.generated_at) < run + 3600);
+            if (saved) continue;
+            // A trade already open on the pair holds its slot; the arbiter blocks a second one.
+            const busy = mine.some((r: any) => at(r.generated_at) < run && (r.outcome === 'pending' || at(r.closed_at) > run));
+            if (busy) { slotBusy++; continue; }
+            missedSetups.push(`${inst} ${setup.setupType} ${setup.direction} at ${new Date(run * 1000).toISOString().slice(11, 16)} UTC`);
+          }
+        }
+      }
+    } catch (err) {
+      replayError = err instanceof Error ? err.message : String(err);
+    }
+
+    // ---- Trades the outcome check should have closed by now ----
+    const { data: openRows } = await supabase
+      .from('generated_signals')
+      .select('instrument, trade_type, setup_type, generated_at')
+      .eq('outcome', 'pending');
+    const stuck = (openRows ?? []).filter((r: any) => {
+      const ageHours = (Date.now() - new Date(r.generated_at).getTime()) / 3600000;
+      const fillWindow = r.trade_type === 'day' ? 4 : 24;
+      return ageHours > fillWindow + maxHoldHours(r.setup_type, r.trade_type) + 2;
+    });
+
+    const problemCount = cronProblems + missed.length + weekendForexLeaks.length + missedSetups.length + stuck.length + (replayError ? 1 : 0);
     // Decided here from the counts, not by the model.
     const hasProblem = jobConcern || problemCount > 0;
 
@@ -254,6 +345,10 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
       `Signals for users without Telegram set up (no push expected): ${noTelegram.length}`,
       `Signals saved below the user's current threshold: ${belowThreshold.length}`,
       `Forex/XAU signals inside market-closed hours: ${weekendForexLeaks.length}`,
+      replayError
+        ? `Expected-vs-saved replay of the last ${AMA_REPLAY_HOURS} hourly runs: could not run (${replayError})`
+        : `Expected-vs-saved replay of the last ${AMA_REPLAY_HOURS} hourly runs: the live rules produced ${expectedSetups} setups for engine users; ${slotBusy} skipped because a trade was already open on that pair; ${missedSetups.length} produced but never saved${missedSetups.length ? ` (${missedSetups.slice(0, 5).join('; ')})` : ''}`,
+      `Open trades past their hold limit (the outcome check should have closed them): ${stuck.length}${stuck.length ? ` (${stuck.slice(0, 5).map((r: any) => `${r.instrument} ${r.trade_type} from ${String(r.generated_at).slice(0, 16)}`).join('; ')})` : ''}`,
     ].join('\n');
 
     // The checks above are the result; DeepSeek only words it. If the model
@@ -263,7 +358,7 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
     let report: string;
     try {
       report = await callDeepSeek(
-        'You are Ama, QA for a trading-signal engine. Report two things: whether the hourly server job ran and the engine answered, and whether every signal that met the confidence threshold was actually delivered to Telegram. Under 130 words, plain text, no filler. Start with the verdict you are given, word for word. If there are forex/XAU signals inside market-closed hours, make that the headline regression. Do not invent causes.',
+        'You are Ama, QA for a trading-signal engine. Report four things: whether the hourly server job ran and the engine answered; whether every setup the live rules produced was saved as a signal; whether every signal that should alert was delivered to Telegram; and whether any open trade is past its hold limit. Under 150 words, plain text, no filler. Start with the verdict you are given, word for word. If setups were produced but never saved, or there are forex/XAU signals inside market-closed hours, make that the headline. Do not invent causes.',
         `Here is what I checked:\n${facts}\n\nVerdict: ${verdict}. Problems counted: ${problemCount}${jobConcern ? ' (plus a job health concern)' : ''}.\nWrite the report. Do not call a delivery confirmed unless it is in the "confirmed delivered" count.`,
       );
     } catch (llmErr) {

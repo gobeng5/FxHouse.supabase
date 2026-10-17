@@ -5,10 +5,9 @@ import type { TradingInstrument, TrendDirection } from '../_shared/analysis/core
 import { findOrderBlocks as findOrderBlocksShared, findFairValueGaps as findFairValueGapsShared, analyzeAsianSession } from '../_shared/analysis/smcAnalysis.ts';
 import type { OrderBlock, FairValueGap } from '../_shared/analysis/smcAnalysis.ts';
 import { evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../_shared/analysis/smcChochFvg.ts';
+import { maxHoldHours } from '../_shared/analysis/holdLimits.ts';
 import {
-  evaluateGbpJpyMomentum,
   evaluateEurUsdZScore,
-  evaluateBoom1000Momentum,
   evaluateV75InsideBar,
   evaluateV10DonchianMarubozu,
   GEM_SETUP_TYPES,
@@ -1422,7 +1421,7 @@ function generateDaySignal(
 //   bullish candle (close >= open): open -> low  -> high -> close
 //   bearish candle (close <  open): open -> high -> low  -> close
 // Same-candle SL + TP is resolved conservatively to the stop.
-type IntrabarTarget = 'SL' | 'TP1' | 'TP2' | 'TP3';
+type IntrabarTarget = 'SL' | 'TP1' | 'TP2' | 'TP3' | 'TIME';
 
 interface IntrabarSetup {
   direction: 'bullish' | 'bearish';
@@ -1437,6 +1436,8 @@ interface IntrabarSetup {
   spread?: number;
   /** Volatility multiplier from the ATR percentile AT GENERATION TIME. */
   spreadMultiplier?: number;
+  /** Hours a filled trade may stay open (see _shared/analysis/holdLimits.ts). */
+  maxHoldHours?: number;
 }
 
 interface IntrabarResolution {
@@ -1503,6 +1504,21 @@ function resolveIntrabar(setup: IntrabarSetup, candles: CandleData[]): IntrabarR
         result.entryFilledAtEpoch = candle.epoch;
       } else {
         continue;
+      }
+    }
+
+    // Time exit: still open when the hold limit runs out → close at this candle's open,
+    // received at the opposite side of the book (open - shift), as in the backtests.
+    if (setup.maxHoldHours) {
+      const filledAt = result.entryFilledAtEpoch ?? setup.generatedAtEpoch;
+      if (candle.epoch >= filledAt + setup.maxHoldHours * 3600) {
+        const exit = candle.open - shift;
+        const gain = direction === 'bullish' ? exit - effEntry : effEntry - exit;
+        result.outcome = gain > 0 ? 'won' : 'lost';
+        result.targetHit = 'TIME';
+        result.exitPrice = exit;
+        result.resolvedAtEpoch = candle.epoch;
+        break;
       }
     }
 
@@ -1619,6 +1635,7 @@ async function checkOutcomes(supabase: any) {
           spread: getSpread(signal.instrument),
           spreadMultiplier: signal.spread_multiplier_applied ??
             appliedSpreadMultiplier(signal.instrument, signal.atr_percentile_at_entry ?? null),
+          maxHoldHours: maxHoldHours(signal.setup_type, signal.trade_type),
         }, candles);
 
         if (intrabar.outcome && intrabar.exitPrice !== null) {
@@ -1632,7 +1649,10 @@ async function checkOutcomes(supabase: any) {
           const when = intrabar.resolvedAtEpoch
             ? new Date(intrabar.resolvedAtEpoch * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' GMT'
             : 'unknown time';
-          note = `Intrabar (1H wick) resolution: ${intrabar.targetHit} hit first at ${exitPrice} (${when}); fill ${fill} after ${intrabar.spreadApplied} spread` +
+          note = (intrabar.targetHit === 'TIME'
+            ? `Time exit: still open after the ${maxHoldHours(signal.setup_type, signal.trade_type)}h hold limit, closed at ${exitPrice} (${when})`
+            : `Intrabar (1H wick) resolution: ${intrabar.targetHit} hit first at ${exitPrice} (${when})`) +
+            `; fill ${fill} after ${intrabar.spreadApplied} spread` +
             (intrabar.ambiguous ? ' — SL and TP inside same candle, resolved conservatively to SL' : '');
         }
 
@@ -1740,6 +1760,7 @@ async function reresolveHistory(supabase: any, from: string, limit = 5000) {
       spread: getSpread(signal.instrument),
       spreadMultiplier: signal.spread_multiplier_applied ??
         appliedSpreadMultiplier(signal.instrument, signal.atr_percentile_at_entry ?? null),
+      maxHoldHours: maxHoldHours(signal.setup_type, signal.trade_type),
     }, candles);
 
     if (!intrabar.outcome || intrabar.exitPrice === null) {
@@ -1866,7 +1887,7 @@ Deno.serve(async (req) => {
           let candidates: (SignalOutput | null)[];
 
           if (isForex) {
-            // Forex and gold: SMC CHoCH + FVG primary; if no setup, evaluate validated Gems for GBP/JPY and EUR/USD
+            // Forex and gold: SMC CHoCH + FVG primary; if no setup, EUR/USD also checks its Z-score gem
             const fetches: Promise<CandleData[]>[] = [
               fetchCandles(symbol, 14400, 100),
               fetchCandles(symbol, 3600, 200),
@@ -1884,57 +1905,30 @@ Deno.serve(async (req) => {
             const nowEpoch = Math.floor(Date.now() / 1000);
             const smc = generateSmcSignal(instrument, fourHour, oneHour, nowEpoch);
             let gemSignal: SignalOutput | null = null;
+            // The GBP/JPY momentum gem is retired (it lost money on closed candles); GBP/JPY trades SMC only.
             if (!smc) {
-              if (instrument === 'GBP/JPY') {
-                const gbpGem = evaluateGbpJpyMomentum(oneHour, nowEpoch);
-                if (gbpGem) gemSignal = generateSelectiveGemSignal(gbpGem, oneHour, nowEpoch);
-              } else if (instrument === 'EUR/USD' && daily.length >= 200) {
+              if (instrument === 'EUR/USD' && daily.length >= 200) {
                 const eurGem = evaluateEurUsdZScore(daily, oneHour, nowEpoch);
                 if (eurGem) gemSignal = generateSelectiveGemSignal(eurGem, oneHour, nowEpoch);
               }
             }
             candidates = [smc ?? gemSignal];
           } else {
-            const [daily, fourHour, oneHour, fifteenMin] = await Promise.all([
-              fetchCandles(symbol, 86400, 100),
+            // Synthetics trade only two rules: the V10 Donchian marubozu gem and the V75
+            // inside-bar gem, both day trades. The scored swing/day strategies and the
+            // BOOM1000 gem lost money after costs in testing, so V25, V50, V100 and
+            // BOOM1000 issue no signals.
+            if (instrument !== 'V10' && instrument !== 'V75') continue;
+            const [fourHour, oneHour, fifteenMin] = await Promise.all([
               fetchCandles(symbol, 14400, 250),
               fetchCandles(symbol, 3600, 200),
-              // The BOOM1000 gem needs a long 15M history so EMA(50) is seeded as in the backtest.
-              fetchCandles(symbol, 900, instrument === 'BOOM1000' ? 300 : 60),
+              fetchCandles(symbol, 900, 60),
             ]);
-
-            if (daily.length < 50 || fourHour.length < 50) {
-              errors.push(`${instrument}: Insufficient data`);
-              continue;
-            }
-
-            // V75 trades only its inside-bar gem, so it has no scored swing signal.
-            const swingSignal = instrument === 'V75' ? null : generateSignal(instrument, daily, fourHour, fifteenMin, oneHour, {
-              forex_min_rr: settings.forex_min_rr,
-              synthetic_min_rr: settings.synthetic_min_rr,
-              ignore_counter_trend: settings.ignore_counter_trend,
-            });
-            let daySignal: SignalOutput | null = null;
-            if (instrument === 'V10') {
-              // V10 day trades come only from the Donchian marubozu gem.
-              const nowEpoch = Math.floor(Date.now() / 1000);
-              const v10Gem = evaluateV10DonchianMarubozu(oneHour, nowEpoch);
-              if (v10Gem) daySignal = generateSelectiveGemSignal(v10Gem, oneHour, nowEpoch);
-            } else if (instrument === 'V75') {
-              // V75 day trades come only from the inside-bar breakout gem.
-              const nowEpoch = Math.floor(Date.now() / 1000);
-              const v75Gem = evaluateV75InsideBar(fourHour, oneHour, fifteenMin, nowEpoch);
-              if (v75Gem) daySignal = generateSelectiveGemSignal(v75Gem, oneHour, nowEpoch);
-            } else if (instrument === 'BOOM1000') {
-              // BOOM1000 day trades strictly use the validated Momentum Gem.
-              // If the 15M momentum cross + 4H trend setup is not present, no day signal is generated.
-              const nowEpoch = Math.floor(Date.now() / 1000);
-              const boomGem = evaluateBoom1000Momentum(fourHour, fifteenMin, nowEpoch);
-              if (boomGem) daySignal = generateSelectiveGemSignal(boomGem, oneHour, nowEpoch);
-            } else {
-              daySignal = generateDaySignal(instrument as TradingInstrument, daily, fourHour, fifteenMin, oneHour);
-            }
-            candidates = [swingSignal, daySignal];
+            const nowEpoch = Math.floor(Date.now() / 1000);
+            const gem = instrument === 'V10'
+              ? evaluateV10DonchianMarubozu(oneHour, nowEpoch)
+              : evaluateV75InsideBar(fourHour, oneHour, fifteenMin, nowEpoch);
+            candidates = [gem ? generateSelectiveGemSignal(gem, oneHour, nowEpoch) : null];
           }
 
           // Process every candidate through the same arbitration/insert/Telegram

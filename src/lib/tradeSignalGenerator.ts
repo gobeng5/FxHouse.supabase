@@ -64,9 +64,7 @@ import { analyzeMarket } from '../../supabase/functions/_shared/analysis/marketA
 import type { AnalysisResult } from '../../supabase/functions/_shared/analysis/marketAnalysis.ts';
 import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
 import {
-  evaluateGbpJpyMomentum,
   evaluateEurUsdZScore,
-  evaluateBoom1000Momentum,
   evaluateV75InsideBar,
   evaluateV10DonchianMarubozu,
   GEM_SETUP_TYPES,
@@ -658,8 +656,6 @@ const applySmcStrategy = (
         breakevenRule: 'None — the stop is not moved',
       },
     };
-  } else if (instrument === 'GBP/JPY') {
-    gemSetup = evaluateGbpJpyMomentum(oneHourCandles, nowEpoch);
   } else if (instrument === 'EUR/USD') {
     gemSetup = evaluateEurUsdZScore(dailyCandles, oneHourCandles, nowEpoch);
   }
@@ -1266,63 +1262,6 @@ export const generateTradePlan = (
           },
         };
       }
-      if (instrument === 'BOOM1000') {
-        const boomGem = evaluateBoom1000Momentum(fourHourCandles, fifteenMinCandles, nowEpoch);
-        if (boomGem) {
-          const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
-          const effectiveEntry = effectiveEntryWithSpread(boomGem.direction, boomGem.entry, spread);
-          return {
-            direction: boomGem.direction,
-            confidence: boomGem.confidence,
-            setupType: boomGem.setupType as any,
-            preferPendingOrder: false,
-            tradeType: 'day',
-            holdingPeriod: '15m to 4h',
-            reasoning: boomGem.reason,
-            confidenceBreakdown: boomGem.parameters as any,
-            risk: {
-              entry: boomGem.entry,
-              effectiveEntry,
-              spreadApplied: spread,
-              atrPercentile: atrPercentile ?? undefined,
-              spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
-              stopLoss: boomGem.stopLoss,
-              stopDistance: Math.round(Math.abs(effectiveEntry - boomGem.stopLoss) / pip),
-              riskPercent: 1,
-              takeProfit1: boomGem.takeProfit,
-              takeProfit2: boomGem.takeProfit,
-              takeProfit3: boomGem.takeProfit,
-              trailingStopLogic: 'None — fixed stop, single 2R target',
-              breakevenRule: 'None — fixed risk geometry',
-            },
-          };
-        }
-        // BOOM1000 day trading strictly requires the validated momentum setup.
-        // No unvalidated generic day trades are taken.
-        return {
-          direction: 'ranging' as TrendDirection,
-          confidence: 0,
-          setupType: 'range',
-          preferPendingOrder: false,
-          tradeType: 'day',
-          holdingPeriod: '—',
-          reasoning: 'BOOM1000 Day: No validated MTF momentum setup currently. Waiting for 4H EMA50/200 trend alignment with M15 EMA(8)/EMA(21) crossover.',
-          confidenceBreakdown: [],
-          risk: {
-            entry: currentPrice,
-            effectiveEntry: currentPrice,
-            spreadApplied: 0,
-            stopLoss: currentPrice,
-            stopDistance: 0,
-            riskPercent: 1,
-            takeProfit1: currentPrice,
-            takeProfit2: currentPrice,
-            takeProfit3: currentPrice,
-            trailingStopLogic: '—',
-            breakevenRule: '—',
-          },
-        };
-      }
       const dayRec = generateDayTradeRecommendation(analysis, direction, currentPrice, pip, sessionAnalysis, decimals, syntheticProfile !== null, instrument, atrPercentile, findOrderBlocks(safeFifteenMin, '1H'), findFairValueGaps(safeFifteenMin, '1H'), livePrice);
       // CONFLICT PREVENTION: If day trade direction opposes swing direction, suppress the day trade signal
       if (direction !== 'ranging' && dayRec.direction !== 'ranging' && dayRec.direction !== direction) {
@@ -1395,39 +1334,46 @@ export const generateTradePlan = (
     atr4H: analysis.fourHourATR,
   };
 
-  if (instrument === 'V75') {
-    // V75 trades only the inside-bar breakout gem (the day trade); the scored swing is switched off.
+  if (isSyntheticIndex(instrument)) {
+    // Synthetics trade only two rules, both day trades: the V10 Donchian marubozu gem and
+    // the V75 inside-bar gem. The scored swing/day strategies and the BOOM1000 gem lost
+    // money after costs in testing, so they are switched off — the same as in the engine.
+    const retired = (tradeType: 'swing' | 'day', reasoning: string): TradePlan['recommendation'] => ({
+      direction: 'ranging',
+      confidence: 0,
+      setupType: 'range',
+      preferPendingOrder: true,
+      tradeType,
+      holdingPeriod: '—',
+      reasoning,
+      risk: {
+        entry: currentPrice,
+        stopLoss: currentPrice,
+        stopDistance: 0,
+        riskPercent: 1,
+        takeProfit1: currentPrice,
+        takeProfit2: currentPrice,
+        takeProfit3: currentPrice,
+        trailingStopLogic: '—',
+        breakevenRule: '—',
+      },
+    });
+    const hasGem = instrument === 'V10' || instrument === 'V75';
     return {
       ...plan,
-      recommendation: {
-        direction: 'ranging',
-        confidence: 0,
-        setupType: 'range',
-        preferPendingOrder: true,
-        tradeType: 'swing',
-        holdingPeriod: '—',
-        reasoning: 'Swing signals are retired for V75. It trades one strategy, the inside-bar breakout — see the day-trade signal.',
-        risk: {
-          entry: currentPrice,
-          stopLoss: currentPrice,
-          stopDistance: 0,
-          riskPercent: 1,
-          takeProfit1: currentPrice,
-          takeProfit2: currentPrice,
-          takeProfit3: currentPrice,
-          trailingStopLogic: '—',
-          breakevenRule: '—',
-        },
-      },
+      recommendation: retired('swing', hasGem
+        ? `Swing signals are retired for ${instrument}. It trades one strategy — see the day-trade signal.`
+        : `No signals for ${instrument}: no tested strategy for it beat the spread. Synthetic signals come only from V10 and V75.`),
+      dayTradeRecommendation: hasGem
+        ? plan.dayTradeRecommendation
+        : retired('day', `No signals for ${instrument}: no tested strategy for it beat the spread. Synthetic signals come only from V10 and V75.`),
       keyLevels: plan.keyLevels.filter(l => l.type === 'support' || l.type === 'resistance'),
       executionPlan: {
         ...plan.executionPlan,
-        preLondonChecklist: [...plan.executionPlan.preLondonChecklist.slice(0, -1), 'No swing order for V75 — see the day-trade signal'],
+        preLondonChecklist: [...plan.executionPlan.preLondonChecklist.slice(0, -1), hasGem ? `No swing order for ${instrument} — see the day-trade signal` : `No order for ${instrument}`],
       },
     };
   }
 
-  return isSyntheticIndex(instrument)
-    ? plan
-    : applySmcStrategy(plan, dailyCandles, fourHourCandles, oneHourCandles, atrPercentile, pip, nowEpoch);
+  return applySmcStrategy(plan, dailyCandles, fourHourCandles, oneHourCandles, atrPercentile, pip, nowEpoch);
 };

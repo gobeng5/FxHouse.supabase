@@ -7,6 +7,7 @@ import { getCurrentSessionInfo } from '@/lib/sessionUtils';
 import { resolveIntrabar, pipsBetween, pipSize, IntrabarCandle } from '@/lib/intrabarResolution';
 import { getSpread, appliedSpreadMultiplier, effectiveEntry as calcEffectiveEntry } from '@/lib/spreadConfig';
 import { SMC_SETUP_TYPE, resolutionStartEpoch } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
+import { maxHoldHours } from '../../supabase/functions/_shared/analysis/holdLimits.ts';
 
 
 export type CandleFetcher = (
@@ -481,6 +482,7 @@ export const useGeneratedSignals = () => {
               spreadMultiplier:
                 signal.spread_multiplier_applied ??
                 appliedSpreadMultiplier(signal.instrument, signal.atr_percentile_at_entry ?? null),
+              maxHoldHours: maxHoldHours(signal.setup_type, signal.trade_type),
             },
             candles
           );
@@ -496,7 +498,10 @@ export const useGeneratedSignals = () => {
             const when = intrabar.resolvedAtEpoch
               ? new Date(intrabar.resolvedAtEpoch * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' GMT'
               : 'unknown time';
-            note = `Intrabar (1H wick) resolution: ${intrabar.targetHit} hit first at ${intrabar.exitPrice} (${when}); fill ${intrabar.effectiveEntry} after ${intrabar.spreadApplied} spread` +
+            note = (intrabar.targetHit === 'TIME'
+              ? `Time exit: still open after the ${maxHoldHours(signal.setup_type, signal.trade_type)}h hold limit, closed at ${intrabar.exitPrice} (${when})`
+              : `Intrabar (1H wick) resolution: ${intrabar.targetHit} hit first at ${intrabar.exitPrice} (${when})`) +
+              `; fill ${intrabar.effectiveEntry} after ${intrabar.spreadApplied} spread` +
               (intrabar.ambiguous ? ' — SL and TP inside same candle, resolved conservatively to SL' : '');
 
             resolutionMethod = 'wick';
@@ -577,6 +582,7 @@ export const useGeneratedSignals = () => {
             spreadMultiplier:
               signal.spread_multiplier_applied ??
               appliedSpreadMultiplier(signal.instrument, signal.atr_percentile_at_entry ?? null),
+            maxHoldHours: maxHoldHours(signal.setup_type, signal.trade_type),
           },
           candles
         );

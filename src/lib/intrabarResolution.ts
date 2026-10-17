@@ -46,9 +46,14 @@ export interface IntrabarSetup {
    * adjustment reflects the regime the trade was actually taken in.
    */
   spreadMultiplier?: number;
+  /**
+   * Hours a filled trade may stay open (see _shared/analysis/holdLimits.ts).
+   * The first candle starting at or after fill + this closes the trade at its open.
+   */
+  maxHoldHours?: number;
 }
 
-export type IntrabarTarget = 'SL' | 'TP1' | 'TP2' | 'TP3';
+export type IntrabarTarget = 'SL' | 'TP1' | 'TP2' | 'TP3' | 'TIME';
 
 export interface IntrabarResolution {
   outcome: 'won' | 'lost' | null;
@@ -150,6 +155,21 @@ export function resolveIntrabar(
         // Same-candle SL+TP after a fill is ambiguous → resolve to SL below.
       } else {
         continue;
+      }
+    }
+
+    // Time exit: still open when the hold limit runs out → close at this candle's open,
+    // received at the opposite side of the book (open - shift), as in the backtests.
+    if (setup.maxHoldHours) {
+      const filledAt = result.entryFilledAtEpoch ?? setup.generatedAtEpoch;
+      if (candle.epoch >= filledAt + setup.maxHoldHours * 3600) {
+        const exit = candle.open - shift;
+        const gain = direction === 'bullish' ? exit - effEntry : effEntry - exit;
+        result.outcome = gain > 0 ? 'won' : 'lost';
+        result.targetHit = 'TIME';
+        result.exitPrice = exit;
+        result.resolvedAtEpoch = candle.epoch;
+        break;
       }
     }
 
