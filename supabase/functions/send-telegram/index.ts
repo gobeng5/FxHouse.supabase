@@ -46,7 +46,8 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
-    const { action, bot_token, chat_id, message } = body;
+    // reply_to_message_id threads a close alert under the signal it closes.
+    const { action, bot_token, chat_id, message, reply_to_message_id } = body;
 
     if (!bot_token || !chat_id) {
       return new Response(
@@ -106,6 +107,9 @@ Deno.serve(async (req) => {
           chat_id,
           text: message,
           parse_mode: 'Markdown',
+          ...(reply_to_message_id
+            ? { reply_parameters: { message_id: reply_to_message_id, allow_sending_without_reply: true } }
+            : {}),
         }),
       });
 

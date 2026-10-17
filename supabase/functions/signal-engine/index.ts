@@ -267,6 +267,98 @@ async function sendTelegramSignalAlert(
   }
 }
 
+// =================== CLOSE ALERTS ===================
+const STRATEGY_LABELS: Record<string, string> = {
+  smc_choch_fvg: 'SMC CHoCH + FVG',
+  gem_v75_insidebar: 'V75 Inside-Bar Breakout',
+  gem_v10_donchian: 'V10 Donchian Marubozu',
+  gem_eurusd_zscore: 'EUR/USD MTF Z-Score',
+  gem_gbpjpy_momentum: 'GBP/JPY Momentum',
+  gem_boom1000_momentum: 'BOOM1000 MTF Momentum',
+};
+
+const formatHeld = (minutes: number | null): string => {
+  if (minutes == null) return 'unknown';
+  const d = Math.floor(minutes / 1440), h = Math.floor((minutes % 1440) / 60), m = minutes % 60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+};
+
+/**
+ * Called by the generated_signals trigger once a trade closes (won / lost /
+ * breakeven), whoever closed it. Claims the row first so the alert goes out once.
+ */
+async function sendCloseAlert(supabase: ReturnType<typeof createClient>, id: string) {
+  const { data: row, error: claimErr } = await supabase
+    .from('generated_signals')
+    .update({ close_notified_at: new Date().toISOString() })
+    .eq('id', id)
+    .is('close_notified_at', null)
+    .in('outcome', ['won', 'lost', 'breakeven'])
+    .select()
+    .maybeSingle();
+  if (claimErr) return { sent: false, reason: claimErr.message };
+  if (!row) return { sent: false, reason: 'already announced or not closed' };
+
+  const record = (fields: Record<string, unknown>) => supabase.from('generated_signals').update(fields).eq('id', row.id);
+
+  const { data: settings } = await supabase
+    .from('user_settings')
+    .select('telegram_enabled, telegram_bot_token, telegram_chat_id')
+    .eq('user_id', row.user_id)
+    .maybeSingle();
+  if (!settings?.telegram_enabled || !settings.telegram_bot_token || !settings.telegram_chat_id) {
+    await record({ close_telegram_status: 'skipped', close_telegram_error: 'Telegram disabled or missing bot credentials' });
+    return { sent: false, reason: 'telegram not set up' };
+  }
+
+  const isTime = String(row.notes ?? '').startsWith('Time exit');
+  const header = row.outcome === 'won' ? '✅ *Trade closed — WIN*' : row.outcome === 'lost' ? '❌ *Trade closed — LOSS*' : '➖ *Trade closed — BREAKEVEN*';
+  const reason = isTime
+    ? `⏱ Time exit: still open after the ${maxHoldHours(row.setup_type, row.trade_type)}h hold limit, closed at market`
+    : row.outcome === 'won' ? '🎯 Target hit' : row.outcome === 'lost' ? '🛑 Stop loss hit' : '➖ Closed at entry';
+  const r = row.r_multiple != null ? Number(row.r_multiple) : null;
+  const pips = row.actual_pnl_pips != null ? Number(row.actual_pnl_pips) : null;
+  const sign = (v: number) => (v > 0 ? '+' : '');
+  const strategy = STRATEGY_LABELS[row.setup_type] ?? `${String(row.trade_type).toUpperCase()} · ${escapeMd(String(row.setup_type ?? '').replace(/_/g, ' '))}`;
+
+  const message = [
+    header,
+    `🏷 *${row.instrument}* — ${row.direction === 'bullish' ? '🟢 LONG' : '🔴 SHORT'}`,
+    `📈 Strategy: ${strategy}`,
+    reason,
+    `▶️ Entry: \`${row.effective_entry ?? row.entry_price}\``,
+    `⏹ Exit: \`${row.actual_exit_price}\``,
+    `🛑 Stop: \`${row.stop_loss}\` · ✅ Target: \`${row.take_profit_1 ?? row.take_profit_2}\``,
+    `📐 Result: \`${r != null ? `${sign(r)}${r.toFixed(2)}R` : '—'}\`${pips != null ? ` (${sign(pips)}${pips.toFixed(1)} pips)` : ''}`,
+    `⌛ Held: ${formatHeld(row.duration_minutes)}`,
+    `🕐 Closed ${row.closed_at ? new Date(row.closed_at).toUTCString() : 'unknown'}`,
+    `🆔 \`${String(row.id).slice(0, 8)}\``,
+  ].join('\n');
+
+  try {
+    const { data, error } = await supabase.functions.invoke('send-telegram', {
+      body: {
+        action: 'send',
+        bot_token: settings.telegram_bot_token,
+        chat_id: settings.telegram_chat_id,
+        message,
+        reply_to_message_id: row.telegram_message_id ?? undefined,
+      },
+    });
+    if (error || !data?.success) {
+      const why = error?.message || data?.error || 'Telegram delivery failed';
+      await record({ close_telegram_status: 'failed', close_telegram_error: why });
+      return { sent: false, reason: why };
+    }
+    await record({ close_telegram_status: 'sent', close_telegram_message_id: data.message_id ?? null, close_telegram_error: null });
+    return { sent: true };
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    await record({ close_telegram_status: 'failed', close_telegram_error: why });
+    return { sent: false, reason: why };
+  }
+}
+
 // =================== DATA FETCHING ===================
 async function fetchCandles(symbol: string, granularity: number, count: number): Promise<CandleData[]> {
   const data = await derivRequest({
@@ -1830,6 +1922,14 @@ Deno.serve(async (req) => {
     
     if (action === 'check_outcomes') {
       const result = await checkOutcomes(supabase);
+      return new Response(JSON.stringify({ success: true, ...result }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    if (action === 'notify_close') {
+      if (typeof body.id !== 'string') {
+        return new Response(JSON.stringify({ success: false, error: 'id required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      const result = await sendCloseAlert(supabase, body.id);
       return new Response(JSON.stringify({ success: true, ...result }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
