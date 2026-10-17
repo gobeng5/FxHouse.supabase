@@ -1,0 +1,7 @@
+backtest
+.backtest
+dist
+node_modules
+.env
+.env.*
+supabase/.temp
