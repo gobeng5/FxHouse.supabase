@@ -114,8 +114,9 @@ export const useAutoAnalysis = () => {
     
     try {
       const [dailyCandles, fourHourCandles, oneHourCandles, fifteenMinCandles] = await Promise.all([
-        // The EUR/USD gem needs 200 closed daily candles; the fetch includes the forming one.
-        getCandles(instrument, 86400, instrument === 'EUR/USD' ? 250 : 200),
+        // The EUR/USD gem needs 200 closed daily candles. Deriv's count spans calendar days,
+        // weekends included, so 400 is needed to get ~285 forex dailies.
+        getCandles(instrument, 86400, instrument === 'EUR/USD' ? 400 : 200),
         getCandles(instrument, 14400, 300),
         getCandles(instrument, 3600, 200),
         // Only the BOOM1000 and V75 day-trade gems read 15M candles.

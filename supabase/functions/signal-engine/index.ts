@@ -1872,7 +1872,9 @@ Deno.serve(async (req) => {
               fetchCandles(symbol, 3600, 200),
             ];
             if (instrument === 'EUR/USD') {
-              fetches.push(fetchCandles(symbol, 86400, 250));
+              // Deriv's count spans calendar days, weekends included: 250 returns ~180 forex
+              // dailies, under the 200 closed ones the EUR/USD gem needs. 400 returns ~285.
+              fetches.push(fetchCandles(symbol, 86400, 400));
             }
             const fetched = await Promise.all(fetches);
             const fourHour = fetched[0];
