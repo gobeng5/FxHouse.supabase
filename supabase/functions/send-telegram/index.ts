@@ -22,13 +22,15 @@ Deno.serve(async (req) => {
     }
 
     const token = authHeader.replace('Bearer ', '');
+// SB_SECRET_KEY / SB_PUBLISHABLE_KEY are the project's new API keys (function secrets);
+// the legacy JWT keys are the fallback until they are disabled in the dashboard.
     const isServiceRoleCall =
-      token === Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+      token === Deno.env.get('SB_SECRET_KEY') || token === Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
     if (!isServiceRoleCall) {
       const supabase = createClient(
         Deno.env.get('SUPABASE_URL')!,
-        Deno.env.get('SUPABASE_ANON_KEY')!,
+        (Deno.env.get('SB_PUBLISHABLE_KEY') ?? Deno.env.get('SUPABASE_ANON_KEY'))!,
         { global: { headers: { Authorization: authHeader } } }
       );
 

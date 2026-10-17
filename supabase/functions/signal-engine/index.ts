@@ -1921,7 +1921,9 @@ Deno.serve(async (req) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+// SB_SECRET_KEY / SB_PUBLISHABLE_KEY are the project's new API keys (function secrets);
+// the legacy JWT keys are the fallback until they are disabled in the dashboard.
+    const supabaseKey = (Deno.env.get('SB_SECRET_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'))!;
     const supabase = createClient(supabaseUrl, supabaseKey);
     
     const body = await req.json().catch(() => ({}));

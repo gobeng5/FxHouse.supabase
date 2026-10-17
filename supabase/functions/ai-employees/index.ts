@@ -11,13 +11,15 @@ const corsHeaders = {
 // The function spends DeepSeek credits and sends a Telegram digest, so it only
 // runs for: the scheduled job (shared secret), service-role callers, or a
 // signed-in admin user.
+// SB_SECRET_KEY / SB_PUBLISHABLE_KEY are the project's new API keys (function secrets);
+// the legacy JWT keys are the fallback until they are disabled in the dashboard.
 async function isAuthorized(req: Request, supabase: ReturnType<typeof createClient>): Promise<boolean> {
   const cronSecret = Deno.env.get('AI_EMPLOYEES_CRON_SECRET');
   if (cronSecret && req.headers.get('x-cron-secret') === cronSecret) return true;
 
   const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
   if (!token) return false;
-  if (token === Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) return true;
+  if (token === Deno.env.get('SB_SECRET_KEY') || token === Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) return true;
 
   const { data: { user } } = await supabase.auth.getUser(token);
   if (!user) return false;
@@ -513,7 +515,7 @@ Deno.serve(async (req) => {
   try {
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+      (Deno.env.get('SB_SECRET_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'))!,
     );
 
     if (!(await isAuthorized(req, supabase))) {
