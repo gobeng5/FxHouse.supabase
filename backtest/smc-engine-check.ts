@@ -108,7 +108,7 @@ await import(pathToFileURL(copy).href);
 
 const runEngine = async () => {
   inserts = []; telegram = []; arbitrations = 0;
-  const res = await handler!(new Request('http://local/signal-engine', { method: 'POST', body: '{}' }));
+  const res = await handler!(new Request('http://local/signal-engine', { method: 'POST', body: '{}', headers: { 'x-engine-secret': 'local' } }));
   return (await res.json()) as any;
 };
 

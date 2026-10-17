@@ -1911,7 +1911,14 @@ async function reresolveHistory(supabase: any, from: string, limit = 5000) {
 // =================== MAIN HANDLER ===================
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
-  
+
+  // Only the cron jobs and the close-alert trigger call the engine; they send the
+  // shared secret (Vault 'signal_engine_secret'). Fail closed if it is not configured.
+  const engineSecret = Deno.env.get('SIGNAL_ENGINE_SECRET');
+  if (!engineSecret || req.headers.get('x-engine-secret') !== engineSecret) {
+    return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  }
+
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
