@@ -184,7 +184,7 @@ const aggregate = (m15: Candle[], g: number): Candle[] => {
 };
 
 /** One random-walk year on the real series' 15M grid, at an annual volatility. */
-function randomWalk(real: Series, annualVol: number): Series {
+export function randomWalk(real: Series, annualVol: number): Series {
   const sd = annualVol * Math.sqrt(STEP_SECONDS / (365 * 86400));
   const steps = 900 / STEP_SECONDS;
   let p = real.m15[0].open;
