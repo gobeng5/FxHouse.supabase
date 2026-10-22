@@ -2,6 +2,10 @@ import { TradingInstrument, TradePlan } from '@/types/trading';
 import { TradeRecommendation } from '@/components/TradeRecommendation';
 import { ExecutionPlan } from '@/components/ExecutionPlan';
 import PositionSizeCalculator from '@/components/PositionSizeCalculator';
+
+// The signal to size: the swing trade if there is one, otherwise the day trade.
+const activeRisk = (plan: TradePlan) =>
+  [plan.recommendation, plan.dayTradeRecommendation].find(r => r && r.direction !== 'ranging')?.risk;
 import { KeyLevelsTable } from '@/components/KeyLevelsTable';
 import { SignalRevalidationPanel } from '@/components/SignalRevalidationPanel';
 
@@ -26,10 +30,9 @@ export const SignalsTab = ({ currentPlan, instrument, prices, onReanalyze }: Sig
     <div className="space-y-6">
       <PositionSizeCalculator
         instrument={instrument}
-        suggestedStopLoss={currentPlan.recommendation.risk?.stopLoss
-          ? Math.abs(currentPlan.currentPrice - currentPlan.recommendation.risk.stopLoss) * 10000
-          : undefined}
-        atr4H={currentPlan.atr4H}
+        entry={activeRisk(currentPlan)?.entry}
+        stopLoss={activeRisk(currentPlan)?.stopLoss}
+        usdJpy={prices['USD/JPY']?.price}
       />
       <KeyLevelsTable
         levels={currentPlan.keyLevels}

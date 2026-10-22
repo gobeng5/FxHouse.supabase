@@ -6,6 +6,7 @@ import { findOrderBlocks as findOrderBlocksShared, findFairValueGaps as findFair
 import type { OrderBlock, FairValueGap } from '../_shared/analysis/smcAnalysis.ts';
 import { entryNeedsFill, evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../_shared/analysis/smcChochFvg.ts';
 import { maxHoldHours } from '../_shared/analysis/holdLimits.ts';
+import { formatLotSuggestion, suggestLots } from '../_shared/analysis/positionSize.ts';
 import {
   evaluateEurUsdZScore,
   evaluateV75InsideBar,
@@ -167,6 +168,18 @@ async function sendTelegramSignalAlert(
   // The V75 inside-bar gem waits at the broken level, like the SMC limit order.
   const isPendingGem = saved.setup_type === GEM_SETUP_TYPES.V75_INSIDEBAR;
 
+  // Suggested lot size from the user's saved balance and risk %; GBP/JPY needs a live USD/JPY rate.
+  const balance = Number(settings.account_balance);
+  let lotLine = '';
+  if (balance > 0) {
+    const usdJpy = saved.instrument === 'GBP/JPY' ? await getCurrentPrice('frxUSDJPY').catch(() => null) : null;
+    const lots = suggestLots({
+      instrument: saved.instrument, entry: Number(saved.entry_price), stopLoss: Number(saved.stop_loss),
+      balance, riskPercent: Number(settings.risk_percent_per_trade) || 1, usdJpy,
+    });
+    if (lots) lotLine = `💰 Lot size: ${formatLotSuggestion(lots, balance)} — check the symbol's minimum lot in MT5`;
+  }
+
   const message = [
     `📊 *FX Swing Bot Signal*`,
     ``,
@@ -185,6 +198,7 @@ async function sendTelegramSignalAlert(
           `✅ TP3: \`${saved.take_profit_3}\``,
         ]),
     `📐 R:R: \`${rr.toFixed(1)}\``,
+    lotLine,
     isSmc ? `⏳ Dropped if not filled within 24h` : isPendingGem ? `⏳ Dropped if not filled within 4h` : isGem ? `⚡ Validated Gem Setup` : '',
     ...triggerLines(saved.confluence_breakdown),
     ``,

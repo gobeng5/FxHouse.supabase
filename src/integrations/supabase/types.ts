@@ -301,6 +301,7 @@ export type Database = {
           notify_instruments: string[] | null
           notify_min_confidence: number
           risk_percent_per_trade: number
+          account_balance: number | null
           signals_paused: boolean
           synthetic_min_rr: number
           telegram_bot_token: string | null
@@ -322,6 +323,7 @@ export type Database = {
           notify_instruments?: string[] | null
           notify_min_confidence?: number
           risk_percent_per_trade?: number
+          account_balance?: number | null
           signals_paused?: boolean
           synthetic_min_rr?: number
           telegram_bot_token?: string | null
@@ -343,6 +345,7 @@ export type Database = {
           notify_instruments?: string[] | null
           notify_min_confidence?: number
           risk_percent_per_trade?: number
+          account_balance?: number | null
           signals_paused?: boolean
           synthetic_min_rr?: number
           telegram_bot_token?: string | null

@@ -106,6 +106,11 @@ export const SettingsPanel = () => {
           )}
           <div className="grid grid-cols-2 gap-4">
             <div>
+              <Label className="text-xs text-muted-foreground">Trading Balance (USD)</Label>
+              <Input type="number" step="10" min="1" placeholder="e.g. 1000" value={localSettings.account_balance ?? ''} onChange={(e) => update('account_balance', e.target.value === '' ? null : Number(e.target.value))} className="mt-1" />
+              <p className="text-[11px] text-muted-foreground mt-1">Used to suggest a lot size on every signal and Telegram alert.</p>
+            </div>
+            <div>
               <Label className="text-xs text-muted-foreground">Risk % Per Trade</Label>
               <Input type="number" step="0.5" min="0.5" max="5" value={localSettings.risk_percent_per_trade} onChange={(e) => update('risk_percent_per_trade', Number(e.target.value))} className="mt-1" />
             </div>

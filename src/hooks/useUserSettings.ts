@@ -7,6 +7,8 @@ export interface UserSettings {
   id: string;
   user_id: string;
   risk_percent_per_trade: number;
+  /** Trading balance in USD for lot-size suggestions; null = not set. */
+  account_balance: number | null;
   max_daily_loss_percent: number;
   max_drawdown_percent: number;
   max_trades_per_day: number;
@@ -25,6 +27,7 @@ export interface UserSettings {
 
 const DEFAULT_SETTINGS: Omit<UserSettings, 'id' | 'user_id'> = {
   risk_percent_per_trade: 1.0,
+  account_balance: null,
   max_daily_loss_percent: 5.0,
   max_drawdown_percent: 15.0,
   max_trades_per_day: 10,

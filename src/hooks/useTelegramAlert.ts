@@ -5,6 +5,14 @@ import { GeneratedSignal } from '@/hooks/useGeneratedSignals';
 import { TradeRecommendation as TradeRecType, TradingInstrument } from '@/types/trading';
 import { GEM_SETUP_TYPES } from '@/lib/selectiveGems';
 import { toast } from 'sonner';
+import { formatLotSuggestion, suggestLots } from '../../supabase/functions/_shared/analysis/positionSize.ts';
+
+// "💰 Lot size: …" from the saved balance and risk %; empty when no balance is set.
+const lotLine = (instrument: string, entry: number, stopLoss: number, balance: number | null | undefined, riskPercent: number | undefined) => {
+  if (!balance || !(balance > 0)) return '';
+  const s = suggestLots({ instrument, entry, stopLoss, balance, riskPercent: riskPercent || 1 });
+  return s ? `💰 Lot size: ${formatLotSuggestion(s, balance)} — check the symbol's minimum lot in MT5` : '';
+};
 
 const isGemSetupType = (type?: string | null): boolean =>
   typeof type === 'string' && Object.values(GEM_SETUP_TYPES).includes(type as any);
@@ -98,6 +106,7 @@ export const useTelegramAlert = () => {
             `✅ TP3: \`${signal.take_profit_3}\``,
           ]),
       `📐 R:R: \`${rr.toFixed(1)}\``,
+      lotLine(signal.instrument, Number(signal.entry_price), Number(signal.stop_loss), settings.account_balance, settings.risk_percent_per_trade),
       isSmc ? `⏳ Dropped if not filled within 24h` : isPendingGem ? `⏳ Dropped if not filled within 4h` : isGem ? `⚡ Validated Gem Setup` : '',
       ...triggerLines(signal.confluence_breakdown),
       ``,
@@ -148,6 +157,7 @@ export const useTelegramAlert = () => {
             `✅ TP3: \`${rec.risk.takeProfit3.toFixed(decimals)}\``,
           ]),
       `📐 R:R: \`${rr.toFixed(1)}\``,
+      rec.direction !== 'ranging' ? lotLine(pair, rec.risk.entry, rec.risk.stopLoss, settings?.account_balance, settings?.risk_percent_per_trade) : '',
       `⏱ Hold: ${rec.holdingPeriod}`,
       ...triggerLines(rec.confidenceBreakdown),
       ``,
