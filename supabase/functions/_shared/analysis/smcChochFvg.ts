@@ -264,8 +264,22 @@ export function evaluateSmcChochFvg(
  * top of that hour (its trigger candle has just closed), and many fill within
  * it, so for this strategy the replay starts at the hour boundary. The V75
  * inside-bar gem is also a pending order issued just after the hour, so it
- * starts there too.
+ * starts there too. The market-entry gems enter at their trigger candle's close,
+ * which is the price at the top of the hour, so their replay starts there as well.
  */
-const HOUR_START_TYPES: readonly string[] = [SMC_SETUP_TYPE, GEM_SETUP_TYPES.V75_INSIDEBAR];
+const MARKET_ENTRY_TYPES: readonly string[] = [
+  GEM_SETUP_TYPES.EURUSD_ZSCORE, GEM_SETUP_TYPES.V10_DONCHIAN,
+  GEM_SETUP_TYPES.GBPJPY_MOMENTUM, GEM_SETUP_TYPES.BOOM1000_MOMENTUM,
+];
+const HOUR_START_TYPES: readonly string[] = [SMC_SETUP_TYPE, GEM_SETUP_TYPES.V75_INSIDEBAR, ...MARKET_ENTRY_TYPES];
 export const resolutionStartEpoch = (setupType: string | null | undefined, generatedAtEpoch: number): number =>
   setupType && HOUR_START_TYPES.includes(setupType) ? Math.floor(generatedAtEpoch / H1_SECONDS) * H1_SECONDS : generatedAtEpoch;
+
+/**
+ * Whether the resolver must see price touch the entry before the trade counts as open.
+ * Market-entry gems are filled when issued; treating them as limit orders left a trade
+ * that ran straight to target "unfilled", and a later return to the entry then
+ * replayed it from there (a winner recorded as a loss).
+ */
+export const entryNeedsFill = (setupType: string | null | undefined): boolean =>
+  !(setupType && MARKET_ENTRY_TYPES.includes(setupType));

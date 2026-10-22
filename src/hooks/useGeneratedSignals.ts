@@ -6,7 +6,7 @@ import { getCurrentSessionInfo } from '@/lib/sessionUtils';
 
 import { resolveIntrabar, pipsBetween, pipSize, IntrabarCandle } from '@/lib/intrabarResolution';
 import { getSpread, appliedSpreadMultiplier, effectiveEntry as calcEffectiveEntry } from '@/lib/spreadConfig';
-import { SMC_SETUP_TYPE, resolutionStartEpoch } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
+import { SMC_SETUP_TYPE, entryNeedsFill, resolutionStartEpoch } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
 import { maxHoldHours } from '../../supabase/functions/_shared/analysis/holdLimits.ts';
 
 
@@ -319,15 +319,24 @@ export const useGeneratedSignals = () => {
     }
   }, [user, calculateStats]);
 
+  // R made, as the engine stores it: P&L pips over the entry-to-stop distance.
+  const rMultipleOf = (signal: GeneratedSignal, pnlPips: number): number => {
+    const riskPips = Math.abs(signal.entry_price - signal.stop_loss) / pipSize(signal.instrument);
+    return riskPips > 0 ? pnlPips / riskPips : 0;
+  };
+
   const updateSignalOutcome = useCallback(async (
     signalId: string,
     outcome: 'won' | 'lost' | 'breakeven' | 'cancelled',
     actualExitPrice?: number,
     actualPnlPips?: number,
     notes?: string,
-    resolutionMethod?: 'tick' | 'wick'
+    resolutionMethod?: 'tick' | 'wick',
+    /** From a candle replay: when the exit happened and the R it made (the engine stores both too). */
+    replay?: { resolvedAtEpoch: number | null; rMultiple: number; generatedAt: string }
   ): Promise<boolean> => {
     try {
+      const closedAt = replay?.resolvedAtEpoch ? new Date(replay.resolvedAtEpoch * 1000) : new Date();
       const { error } = await supabase
         .from('generated_signals')
         .update({
@@ -336,7 +345,11 @@ export const useGeneratedSignals = () => {
           actual_pnl_pips: actualPnlPips,
           notes,
           resolution_method: resolutionMethod ?? null,
-          closed_at: new Date().toISOString(),
+          closed_at: closedAt.toISOString(),
+          ...(replay ? {
+            r_multiple: Number(replay.rMultiple.toFixed(2)),
+            duration_minutes: Math.max(0, Math.round((closedAt.getTime() - new Date(replay.generatedAt).getTime()) / 60000)),
+          } : {}),
         })
         .eq('id', signalId);
 
@@ -460,7 +473,7 @@ export const useGeneratedSignals = () => {
       // Preferred path: wick-based intrabar resolution over 1H OHLC so that
       // "which level was hit first" is decided by candle path, not by whichever
       // tick we happened to sample.
-      let result: { outcome: 'won' | 'lost' | null; exitPrice: number; pnlPips: number } | null = null;
+      let result: { outcome: 'won' | 'lost' | null; exitPrice: number; pnlPips: number; resolvedAtEpoch: number | null } | null = null;
       let note = '';
       let resolutionMethod: 'tick' | 'wick' = 'tick';
 
@@ -476,7 +489,7 @@ export const useGeneratedSignals = () => {
               takeProfit2: signal.take_profit_2,
               takeProfit3: signal.take_profit_3,
               generatedAtEpoch: resolutionStartEpoch(signal.setup_type, Math.floor(new Date(signal.generated_at).getTime() / 1000)),
-              requiresFill: true,
+              requiresFill: entryNeedsFill(signal.setup_type),
               // Regime at generation time, not now — see spreadConfig.ts.
               spread: getSpread(signal.instrument),
               spreadMultiplier:
@@ -494,6 +507,7 @@ export const useGeneratedSignals = () => {
               exitPrice: intrabar.exitPrice,
               // P&L measured from the realistic fill, not the theoretical entry.
               pnlPips: pipsBetween(signal.instrument, dir, intrabar.effectiveEntry, intrabar.exitPrice),
+              resolvedAtEpoch: intrabar.resolvedAtEpoch,
             };
             const when = intrabar.resolvedAtEpoch
               ? new Date(intrabar.resolvedAtEpoch * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' GMT'
@@ -524,7 +538,8 @@ export const useGeneratedSignals = () => {
           result.exitPrice,
           parseFloat(result.pnlPips.toFixed(1)),
           note,
-          resolutionMethod
+          resolutionMethod,
+          { resolvedAtEpoch: result.resolvedAtEpoch, rMultiple: rMultipleOf(signal, result.pnlPips), generatedAt: signal.generated_at }
         );
         
         if (success) {
@@ -577,7 +592,7 @@ export const useGeneratedSignals = () => {
             takeProfit2: signal.take_profit_2,
             takeProfit3: signal.take_profit_3,
             generatedAtEpoch: resolutionStartEpoch(signal.setup_type, genEpoch),
-            requiresFill: true,
+            requiresFill: entryNeedsFill(signal.setup_type),
             spread: getSpread(signal.instrument),
             spreadMultiplier:
               signal.spread_multiplier_applied ??
@@ -616,7 +631,8 @@ export const useGeneratedSignals = () => {
           intrabar.exitPrice,
           parseFloat(pnlPips.toFixed(1)),
           `Corrected by fill-gated 1H wick audit: ${intrabar.targetHit} was hit first (was recorded as ${signal.outcome})`,
-          'wick'
+          'wick',
+          { resolvedAtEpoch: intrabar.resolvedAtEpoch, rMultiple: rMultipleOf(signal, pnlPips), generatedAt: signal.generated_at }
         );
         if (ok) corrected++;
       } catch (err) {

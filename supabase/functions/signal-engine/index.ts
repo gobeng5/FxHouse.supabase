@@ -4,7 +4,7 @@ import { computeSwingConfidence } from '../_shared/analysis/swingConfidence.ts';
 import type { TradingInstrument, TrendDirection } from '../_shared/analysis/core.ts';
 import { findOrderBlocks as findOrderBlocksShared, findFairValueGaps as findFairValueGapsShared, analyzeAsianSession } from '../_shared/analysis/smcAnalysis.ts';
 import type { OrderBlock, FairValueGap } from '../_shared/analysis/smcAnalysis.ts';
-import { evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../_shared/analysis/smcChochFvg.ts';
+import { entryNeedsFill, evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../_shared/analysis/smcChochFvg.ts';
 import { maxHoldHours } from '../_shared/analysis/holdLimits.ts';
 import {
   evaluateEurUsdZScore,
@@ -1723,7 +1723,7 @@ async function checkOutcomes(supabase: any) {
           takeProfit2: signal.take_profit_2,
           takeProfit3: signal.take_profit_3,
           generatedAtEpoch: resolutionStartEpoch(signal.setup_type, Math.floor(new Date(signal.generated_at).getTime() / 1000)),
-          requiresFill: true,
+          requiresFill: entryNeedsFill(signal.setup_type),
           spread: getSpread(signal.instrument),
           spreadMultiplier: signal.spread_multiplier_applied ??
             appliedSpreadMultiplier(signal.instrument, signal.atr_percentile_at_entry ?? null),
@@ -1848,7 +1848,7 @@ async function reresolveHistory(supabase: any, from: string, limit = 5000) {
       takeProfit2: signal.take_profit_2,
       takeProfit3: signal.take_profit_3,
       generatedAtEpoch: resolutionStartEpoch(signal.setup_type, genEpoch),
-      requiresFill: true,
+      requiresFill: entryNeedsFill(signal.setup_type),
       spread: getSpread(signal.instrument),
       spreadMultiplier: signal.spread_multiplier_applied ??
         appliedSpreadMultiplier(signal.instrument, signal.atr_percentile_at_entry ?? null),
