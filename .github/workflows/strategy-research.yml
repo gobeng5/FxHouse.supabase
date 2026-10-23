@@ -1,0 +1,46 @@
+# Weekly strategy research: fresh year of Deriv candles -> rule library backtest ->
+# results in Supabase (strategy_research_runs / strategy_suggestions). Esi, one of
+# the AI employees, reads them and reports. Nothing is applied automatically.
+name: Strategy research
+
+on:
+  schedule:
+    - cron: '0 2 * * 0' # Sundays 02:00 UTC, while forex is closed
+  workflow_dispatch:
+
+concurrency:
+  group: strategy-research
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download a year of candles from Deriv
+        run: bun run backtest/download-data.ts
+
+      - name: Run the research library
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: bun run backtest/research-agent.ts --save
+
+      - name: Ask Esi to report
+        env:
+          AI_EMPLOYEES_CRON_SECRET: ${{ secrets.AI_EMPLOYEES_CRON_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/functions/v1/ai-employees" \
+            -H "x-cron-secret: $AI_EMPLOYEES_CRON_SECRET" \
+            -H 'Content-Type: application/json' \
+            -d '{"employee":"esi"}'

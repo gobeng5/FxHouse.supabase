@@ -554,6 +554,72 @@ async function fetchRegimeCandles(): Promise<Map<string, any[]>> {
   }
 }
 
+// --- Esi: strategy research ---
+// The research itself runs weekly in GitHub Actions (backtest/research-agent.ts) and
+// writes strategy_research_runs / strategy_suggestions. Esi reports the latest run,
+// has DeepSeek explain each new suggestion from its numbers, and alerts once per
+// suggestion. A suggestion is never applied automatically.
+async function runEsi(supabase: ReturnType<typeof createClient>, alertSettings: TelegramSettings = null) {
+  const task = 'Strategy research review';
+  await setWorking(supabase, 'esi', task);
+  try {
+    const { data: runs, error: runErr } = await supabase
+      .from('strategy_research_runs').select('*').order('run_at', { ascending: false }).limit(1);
+    if (runErr) throw runErr;
+    const run = runs?.[0];
+    if (!run) {
+      await setDone(supabase, 'esi', task, 'No research run yet. It runs weekly (Sundays 02:00 UTC) in GitHub Actions: Strategy research.');
+      return;
+    }
+    const { data: suggestions, error: sugErr } = await supabase
+      .from('strategy_suggestions').select('*').eq('run_id', run.id).order('created_at');
+    if (sugErr) throw sugErr;
+
+    const fmt = (x: any) => x ? `avg ${x.avgR >= 0 ? '+' : ''}${x.avgR}R, win ${x.winRate}%, max DD ${x.maxDrawdownR}R, ${x.n} trades` : '—';
+    const fresh: any[] = [];
+    for (const sg of suggestions ?? []) {
+      if (sg.reason) continue;
+      let reason: string;
+      try {
+        reason = await callDeepSeek(
+          'You are Esi, strategy researcher for a trading app. Explain in under 90 words, plain text, why the candidate strategy is suggested over the live one, using ONLY the numbers given: average R (full and holdout), win rate, max drawdown, number of trades, and the share of random-walk years that did as well. Say plainly that it is a backtest result, not proof, and should be watched on demo before going live. Do not invent mechanisms or numbers.',
+          JSON.stringify({ instrument: sg.instrument, candidate: { family: sg.family, params: sg.params, ...sg.candidate }, live: sg.incumbent }),
+        );
+      } catch (llmErr) {
+        reason = `Beats the live strategy on holdout average R, win rate and drawdown, and passed the luck test. (Explanation could not be written: ${llmErr instanceof Error ? llmErr.message : 'unknown error'}.)`;
+      }
+      await supabase.from('strategy_suggestions').update({ reason }).eq('id', sg.id);
+      fresh.push({ ...sg, reason });
+    }
+    const all = (suggestions ?? []).map((sg: any) => fresh.find(f => f.id === sg.id) ?? sg);
+
+    const perInstrument = Object.entries(run.summary ?? {}).map(([inst, v]: [string, any]) => {
+      const live = v.incumbent ? `live ${v.incumbent.name}: holdout ${fmt(v.incumbent.holdout)}` : 'live: none';
+      const best = v.bestHoldout ? `best tested ${v.bestHoldout.family}: holdout ${fmt(v.bestHoldout.holdout)}` : '';
+      return `${inst.padEnd(8)} ${v.configsTested} tested, ${v.passedComparison} beat the live strategy, ${v.finalists?.length ?? 0} luck-tested${v.suggestion ? ' → SUGGESTION' : ''}\n         ${live}${best ? `\n         ${best}` : ''}`;
+    });
+    const sugLines = all.map((sg: any) =>
+      `• ${sg.instrument}: ${sg.family} ${JSON.stringify(sg.params)}\n  candidate ${fmt(sg.candidate.full)} (holdout ${fmt(sg.candidate.holdout)}, luck ${(sg.candidate.luckShare * 100).toFixed(1)}%)\n  live      ${sg.incumbent ? fmt(sg.incumbent.full) : 'none'}\n  Why: ${sg.reason}\n  Status: ${sg.status}`);
+
+    const report = [
+      `VERDICT: ${all.length ? `${all.length} SUGGESTION(S) — review before any change` : 'NO BETTER STRATEGY FOUND — keep the live strategies'}`,
+      `Run ${String(run.run_at).slice(0, 16)} UTC on data ${String(run.data_from).slice(0, 10)} → ${String(run.data_to).slice(0, 10)}; ${run.configs_tested} configurations tested.`,
+      'Bar: ≥30 trades, positive in train and holdout, t ≥ 2, beats the live strategy on avg R, win rate and drawdown, and under 1% of random-walk years do as well.',
+      '',
+      ...(sugLines.length ? ['SUGGESTIONS', ...sugLines, ''] : []),
+      'BY INSTRUMENT',
+      ...perInstrument,
+    ].join('\n');
+
+    const alert = fresh.length && alertSettings
+      ? `\n\n${await sendTelegramAlert(supabase, alertSettings, 'Esi: new strategy suggestion', fresh.map((sg: any) => `${sg.instrument}: ${sg.family} ${JSON.stringify(sg.params)}\ncandidate ${fmt(sg.candidate.full)}\nlive ${sg.incumbent ? fmt(sg.incumbent.full) : 'none'}\n${sg.reason}`).join('\n\n'))}`
+      : '';
+    await setDone(supabase, 'esi', task, `${report}${alert}`);
+  } catch (err) {
+    await setError(supabase, 'esi', task, err instanceof Error ? err.message : 'Unknown error');
+  }
+}
+
 // --- Kobby: economic news ---
 async function runKobby(supabase: ReturnType<typeof createClient>) {
   const task = 'Economic calendar check';
@@ -597,7 +663,7 @@ async function runBoss(supabase: ReturnType<typeof createClient>, settings: { us
       .neq('employee_id', 'boss');
 
     const byId = new Map((activity ?? []).map((a: any) => [a.employee_id, a]));
-    const names: Record<string, string> = { kofi: 'Kofi (Security)', ama: 'Ama (Signal QA)', yaw: 'Yaw (Market Research)', kobby: 'Kobby (Economic News)' };
+    const names: Record<string, string> = { kofi: 'Kofi (Security)', ama: 'Ama (Signal QA)', yaw: 'Yaw (Strategy Health)', kobby: 'Kobby (Economic News)', esi: 'Esi (Strategy Research)' };
     const facts = Object.keys(names).map(id => {
       const a = byId.get(id);
       if (!a) return `${names[id]}: no report yet`;
@@ -605,7 +671,7 @@ async function runBoss(supabase: ReturnType<typeof createClient>, settings: { us
     }).join('\n\n');
 
     const digest = await callDeepSeek(
-      'You are the Boss, summarizing four employees\' reports into one digest for the human owner of this trading app. Be concise — under 150 words total. Lead with anything that needs attention (errors, regressions, high-impact news); routine all-clear items get one short line each.',
+      'You are the Boss, summarizing the employees\' reports into one digest for the human owner of this trading app. Be concise — under 150 words total. Lead with anything that needs attention (errors, regressions, high-impact news); routine all-clear items get one short line each.',
       `Today's reports:\n\n${facts}\n\nWrite the digest.`,
     );
 
@@ -662,6 +728,7 @@ Deno.serve(async (req) => {
     else if (employee === 'ama') await runAma(supabase, settings);
     else if (employee === 'yaw') await runYaw(supabase, settings);
     else if (employee === 'kobby') await runKobby(supabase);
+    else if (employee === 'esi') await runEsi(supabase, settings);
     else if (employee === 'boss') await runBoss(supabase, settings);
     else {
       // Default: run the four workers, then Boss synthesizes and sends the digest.
@@ -669,6 +736,7 @@ Deno.serve(async (req) => {
       await runAma(supabase);
       await runYaw(supabase, settings);
       await runKobby(supabase);
+      await runEsi(supabase, settings);
       await runBoss(supabase, settings);
     }
 

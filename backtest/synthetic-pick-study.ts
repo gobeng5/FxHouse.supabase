@@ -92,7 +92,7 @@ function insideBar(instrument: string, s: Series): Trade[] {
  *   'market': enter at the run's price; SL/TP 2x/4x ATR from that entry.
  *   'level':  pending order back at the broken level, live 4h like a day signal.
  */
-export function insideBarHourly(instrument: string, s: Series, mode: 'market' | 'level'): Trade[] {
+export function insideBarHourly(instrument: string, s: Series, mode: 'market' | 'level', slAtr = 2, tpR = 2): Trade[] {
   const atr = atrSeries(s.h1);
   const atrPct = atrPercentileSeries(atr);
   const trades: Trade[] = [];
@@ -112,12 +112,12 @@ export function insideBarHourly(instrument: string, s: Series, mode: 'market' | 
       let t: Trade | null = null;
       if (mode === 'market') {
         const bar = s.m15[firstIndexAtOrAfter(s.m15, closedTo)];
-        if (bar) t = simulate(s.m15, bar.epoch, bar.open, fill.dir, 2 * atr[i], 2, spread, 48);
+        if (bar) t = simulate(s.m15, bar.epoch, bar.open, fill.dir, slAtr * atr[i], tpR, spread, 48);
       } else {
         const level = fill.dir === 1 ? mother.high : mother.low;
         for (let j = firstIndexAtOrAfter(s.m15, closedTo); j < s.m15.length && s.m15[j].epoch < run + 4 * 3600; j++) {
           const c = s.m15[j];
-          if (c.low <= level && c.high >= level) { t = simulate(s.m15, c.epoch, level, fill.dir, 2 * atr[i], 2, spread, 48); break; }
+          if (c.low <= level && c.high >= level) { t = simulate(s.m15, c.epoch, level, fill.dir, slAtr * atr[i], tpR, spread, 48); break; }
         }
       }
       if (t) { trades.push(t); busyUntil = t.exitEpoch; }

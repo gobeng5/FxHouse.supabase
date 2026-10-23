@@ -34,7 +34,7 @@ const PATHS = 200;
 type Dir = 1 | -1;
 
 /** One open trade at a time; each signal enters at `entryEpoch` / `entry`. */
-function runSignals(s: Series, signals: { entryEpoch: number; entry: number; dir: Dir; stopDist: number; spread: number }[], tpR: number, holdHours: number): Trade[] {
+export function runSignals(s: Series, signals: { entryEpoch: number; entry: number; dir: Dir; stopDist: number; spread: number }[], tpR: number, holdHours: number): Trade[] {
   const out: Trade[] = [];
   let busyUntil = 0;
   for (const g of signals) {
@@ -48,7 +48,7 @@ function runSignals(s: Series, signals: { entryEpoch: number; entry: number; dir
 }
 
 // ---- V25: H4 impulse continuation with the D1 trend (followup-study.ts h4Tests) ----
-function h4ImpulseD1(instrument: string, s: Series): Trade[] {
+export function h4ImpulseD1(instrument: string, s: Series, tpR = 2): Trade[] {
   const h4 = s.h4, atr = atrSeries(h4), atrPct = atrPercentileSeries(atr), d1T = trendD1(s.d1);
   const sign = (v: number): 0 | Dir => (v > 0 ? 1 : v < 0 ? -1 : 0);
   const sig = [];
@@ -60,13 +60,13 @@ function h4ImpulseD1(instrument: string, s: Series): Trade[] {
     if (!(sign(c.close - c.open) === dir && range >= 1.5 * med && range >= 1.2 * atr[i - 1] && sign(h4[i - 1].close - h4[i - 4].close) === dir)) continue;
     sig.push({ entryEpoch: h4[i + 1].epoch, entry: h4[i + 1].open, dir: dir as Dir, stopDist: 1.5 * atr[i], spread: getVolatilityAdjustedSpread(instrument as never, atrPct[i]) });
   }
-  return runSignals(s, sig, 2, 192);
+  return runSignals(s, sig, tpR, 192);
 }
 
 // ---- Candle patterns (candlestick-volatility-study.ts): enter at the signal candle's close ----
-type Pattern = (c: Candle[], atr: number[], i: number) => { dir: Dir; stopDist: number } | null;
+export type Pattern = (c: Candle[], atr: number[], i: number) => { dir: Dir; stopDist: number } | null;
 
-const sweepPinBar: Pattern = (cs, atrS, i) => {
+export const sweepPinBar: Pattern = (cs, atrS, i) => {
   if (i < 21) return null;
   const c = cs[i], range = c.high - c.low, atr = atrS[i];
   if (range <= 0 || !atr || range < 0.5 * atr) return null;
@@ -78,7 +78,7 @@ const sweepPinBar: Pattern = (cs, atrS, i) => {
   return null;
 };
 
-const starReversal: Pattern = (cs, atrS, i) => {
+export const starReversal: Pattern = (cs, atrS, i) => {
   if (i < 51) return null;
   const [c1, c2, c3] = [cs[i - 2], cs[i - 1], cs[i]], atr = atrS[i];
   if (!atr) return null;
@@ -92,7 +92,7 @@ const starReversal: Pattern = (cs, atrS, i) => {
   return null;
 };
 
-function candlePattern(instrument: string, s: Series, tf: 'h1' | 'h4', fn: Pattern, tpR: number): Trade[] {
+export function candlePattern(instrument: string, s: Series, tf: 'h1' | 'h4', fn: Pattern, tpR: number): Trade[] {
   const cs = s[tf], atr = atrSeries(cs, 14), g = GRANULARITY[tf];
   const spread = getVolatilityAdjustedSpread(instrument as never, null);
   const sig = [];
