@@ -12,14 +12,19 @@ concurrency:
   group: strategy-research
   cancel-in-progress: false
 
+# The job only reads the repo; Supabase is reached with its own secret.
+permissions:
+  contents: read
+
 jobs:
   research:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      # Actions pinned to commit SHAs: the job holds the Supabase secret key.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
 
