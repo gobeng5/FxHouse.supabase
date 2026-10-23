@@ -2,6 +2,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import { evaluateLiveSetups, LIVE_INSTRUMENTS } from '../_shared/analysis/liveStrategies.ts';
 import type { LiveCandles } from '../_shared/analysis/liveStrategies.ts';
 import { maxHoldHours } from '../_shared/analysis/holdLimits.ts';
+import { atrPercentiles, BENCHMARKS, healthOf, MIN_TRADES_FOR_VERDICT, realisedVolatility, regimeOf, STATED_VOLATILITY, STRATEGIES_BY_INSTRUMENT } from '../_shared/analysis/strategyHealth.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -175,6 +176,10 @@ type TelegramSettings = { telegram_enabled?: boolean; telegram_bot_token?: strin
 // Sent straight away when Ama runs on her own and finds a problem, instead of
 // waiting for the next daily digest. Returns a line for her report.
 async function sendAmaAlert(supabase: ReturnType<typeof createClient>, settings: TelegramSettings, text: string): Promise<string> {
+  return sendTelegramAlert(supabase, settings, 'Ama: signal pipeline problem', text);
+}
+
+async function sendTelegramAlert(supabase: ReturnType<typeof createClient>, settings: TelegramSettings, title: string, text: string): Promise<string> {
   if (!settings?.telegram_enabled || !settings.telegram_bot_token || !settings.telegram_chat_id) {
     return 'Alert: not sent (Telegram is disabled or not configured).';
   }
@@ -183,7 +188,7 @@ async function sendAmaAlert(supabase: ReturnType<typeof createClient>, settings:
       action: 'send',
       bot_token: settings.telegram_bot_token,
       chat_id: settings.telegram_chat_id,
-      message: `🚨 *Ama: signal pipeline problem*\n\n${text.replace(/[_*`\[\]]/g, '')}`,
+      message: `🚨 *${title}*\n\n${text.replace(/[_*`\[\]]/g, '')}`,
     },
   });
   if (error || !data?.success) return `Alert: Telegram delivery FAILED — ${data?.error ?? error?.message ?? 'unknown error'}`;
@@ -379,52 +384,144 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
     await setError(supabase, 'ama', task, `${message}${alert}`);
   }
 }
-async function runYaw(supabase: ReturnType<typeof createClient>) {
-  const task = 'Volatility review';
+async function runYaw(supabase: ReturnType<typeof createClient>, alertSettings: TelegramSettings = null) {
+  const task = 'Strategy health & market regime';
   await setWorking(supabase, 'yaw', task);
   try {
-    const recentSince = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
-    const baselineSince = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-
-    const { data: recent } = await supabase
+    // ---- Strategy health: live closed trades vs each strategy's backtest ----
+    const earliest = Object.values(BENCHMARKS).map(b => b.liveSince).sort()[0];
+    const { data: rows, error } = await supabase
       .from('generated_signals')
-      .select('instrument, atr_percentile_at_entry')
-      .gte('created_at', recentSince)
-      .not('atr_percentile_at_entry', 'is', null);
-    const { data: baseline } = await supabase
-      .from('generated_signals')
-      .select('instrument, atr_percentile_at_entry')
-      .gte('created_at', baselineSince)
-      .lt('created_at', recentSince)
-      .not('atr_percentile_at_entry', 'is', null);
+      .select('instrument, setup_type, outcome, r_multiple, generated_at, closed_at')
+      .in('setup_type', Object.keys(BENCHMARKS))
+      .in('outcome', ['won', 'lost', 'breakeven'])
+      .gte('generated_at', earliest)
+      .order('closed_at', { ascending: true });
+    if (error) throw error;
 
-    const avgBy = (rows: any[] | null) => {
-      const m = new Map<string, number[]>();
-      for (const r of rows ?? []) {
-        if (!m.has(r.instrument)) m.set(r.instrument, []);
-        m.get(r.instrument)!.push(r.atr_percentile_at_entry);
+    // Every engine user gets the same setup; count each setup once.
+    const seen = new Set<string>();
+    const rsBySetup: Record<string, number[]> = {};
+    for (const r of rows ?? []) {
+      const b = BENCHMARKS[r.setup_type];
+      if (!b || r.generated_at < b.liveSince || r.r_multiple == null) continue;
+      const key = `${r.instrument}|${r.setup_type}|${String(r.generated_at).slice(0, 13)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      (rsBySetup[r.setup_type] ??= []).push(Number(r.r_multiple));
+    }
+    const health = Object.keys(BENCHMARKS).map(k => healthOf(k, rsBySetup[k] ?? []));
+
+    // ---- Market regime and feed anomalies, from Deriv H1 candles ----
+    const regimes: string[] = [];
+    const anomalies: string[] = [];
+    let regimeError: string | null = null;
+    try {
+      const candles = await fetchRegimeCandles();
+      const now = Date.now() / 1000;
+      for (const inst of LIVE_INSTRUMENTS) {
+        const h1 = (candles.get(inst) ?? []).filter((c: any) => c.epoch + 3600 <= now); // closed bars only
+        const pct = atrPercentiles(h1);
+        const recent = pct.slice(-72).filter(x => !Number.isNaN(x));
+        const base = pct.slice(-720, -72).filter(x => !Number.isNaN(x));
+        if (!recent.length || !base.length) { regimes.push(`${inst.padEnd(8)} not enough history`); continue; }
+        const mean = (xs: number[]) => xs.reduce((x, y) => x + y, 0) / xs.length;
+        const r3 = mean(recent), r30 = mean(base), regime = regimeOf(r3);
+        const notes = (STRATEGIES_BY_INSTRUMENT[inst] ?? []).map(k => {
+          const b = BENCHMARKS[k], g = b.byRegime[regime];
+          return g.n >= 10 ? `${b.label} earned ${g.avgR >= 0 ? '+' : ''}${g.avgR.toFixed(2)}R/trade in ${regime} regimes in backtest (vs ${b.avgR >= 0 ? '+' : ''}${b.avgR.toFixed(2)} overall)` : '';
+        }).filter(Boolean);
+        regimes.push(`${inst.padEnd(8)} ${r30.toFixed(0).padStart(2)} -> ${r3.toFixed(0).padStart(2)}  ${regime.toUpperCase().padEnd(6)}${notes.length ? `  ${notes.join('; ')}` : ''}`);
+
+        // Feed gaps in the last 72h (forex: weekday hours only).
+        const last72 = h1.filter((c: any) => c.epoch >= now - 72 * 3600);
+        const isFx = inst.includes('/');
+        let gaps = 0;
+        for (let k = 1; k < last72.length; k++) {
+          const gap = last72[k].epoch - last72[k - 1].epoch;
+          if (gap <= 3600) continue;
+          const d = new Date(last72[k - 1].epoch * 1000);
+          const weekend = d.getUTCDay() === 6 || d.getUTCDay() === 0 || (d.getUTCDay() === 5 && d.getUTCHours() >= 20);
+          // Gold (and some forex feeds) skip the 21:00 UTC bar every weekday: the daily break.
+          const dailyBreak = gap <= 7200 && d.getUTCHours() >= 20 && d.getUTCHours() <= 21;
+          if (!isFx || !(weekend || dailyBreak)) gaps++;
+        }
+        if (gaps) anomalies.push(`${inst}: ${gaps} missing-candle gap(s) in the last 72h`);
+
+        // Synthetics: realised volatility over 7 days vs the level Deriv states.
+        const stated = STATED_VOLATILITY[inst];
+        const rv = stated ? realisedVolatility(h1.slice(-168).map((c: any) => c.close)) : null;
+        if (stated && rv && (rv < 0.7 * stated || rv > 1.3 * stated)) {
+          anomalies.push(`${inst}: realised volatility ${(rv * 100).toFixed(0)}% over 7 days vs ${(stated * 100).toFixed(0)}% stated`);
+        }
       }
-      const out: Record<string, number> = {};
-      for (const [k, v] of m) out[k] = v.reduce((a, b) => a + b, 0) / v.length;
-      return out;
-    };
-    const recentAvg = avgBy(recent), baselineAvg = avgBy(baseline);
-    const shifts = Object.keys(recentAvg)
-      .filter(k => baselineAvg[k] !== undefined)
-      .map(k => ({ inst: k, recent: recentAvg[k], baseline: baselineAvg[k], delta: recentAvg[k] - baselineAvg[k] }))
-      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+    } catch (err) {
+      regimeError = err instanceof Error ? err.message : String(err);
+    }
 
-    const facts = shifts.length
-      ? shifts.slice(0, 6).map(s => `${s.inst}: ATR percentile ${s.baseline.toFixed(0)} (30d) -> ${s.recent.toFixed(0)} (3d), delta ${s.delta >= 0 ? '+' : ''}${s.delta.toFixed(0)}`).join('\n')
-      : 'Not enough signal history yet to compare a 3-day window against a 30-day baseline.';
+    // ---- Verdict and report (all from the numbers above) ----
+    const failing = health.filter(h => h.status === 'FAILING');
+    const watch = health.filter(h => h.status === 'WATCH');
+    const streaks = health.filter(h => h.streakBeyondBacktest);
+    const verdict = failing.length || streaks.length
+      ? `PROBLEM: ${[...failing.map(h => `${h.label} is below its backtest band`), ...streaks.map(h => `${h.label} losing streak ${h.currentLosingStreak} is past the backtest worst ${h.worstLosingStreak}`)].join('; ')}`
+      : `ALL STRATEGIES WITHIN EXPECTATION (${failing.length} failing, ${watch.length} watch)`;
+    const sign = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
+    const healthLines = health.map(h =>
+      `${h.label.padEnd(16)} ${String(h.n).padStart(3)} trades  live ${h.liveAvgR == null ? '  —  ' : sign(h.liveAvgR)}  expected ${sign(h.expected)}  band ${h.lower == null ? '—' : `${sign(h.lower)} … ${sign(h.upper!)}`}  ${h.status}`);
+    const streakLines = health.filter(h => h.currentLosingStreak > 0)
+      .map(h => `${h.label}: ${h.currentLosingStreak} loss(es) in a row (backtest worst ${h.worstLosingStreak})${h.streakBeyondBacktest ? ' — BEYOND BACKTEST' : ' — normal'}`);
+    const todo = failing.length
+      ? `Consider pausing ${failing.map(h => h.label).join(', ')}: live results are below what chance allows for its backtest.`
+      : streaks.length
+        ? `Watch ${streaks.map(h => h.label).join(', ')}: the losing run is longer than any in the backtest.`
+        : watch.length
+          ? `Keep watching ${watch.map(h => h.label).join(', ')}: below expectation but within chance.`
+          : `Nothing to do. A verdict needs ~${MIN_TRADES_FOR_VERDICT} closed trades per strategy.`;
 
-    const report = await callDeepSeek(
-      'You are Yaw, a market research assistant for a trading app. You are given REAL computed ATR-percentile shifts per instrument (not opinions) — narrate only what the numbers actually show, do not invent patterns beyond them. Under 130 words.',
-      `Volatility shifts (3-day recent vs 30-day baseline, ATR percentile):\n${facts}\n\nWrite the report, noting which instruments moved most.`,
-    );
-    await setDone(supabase, 'yaw', task, report);
+    const report = [
+      `VERDICT: ${verdict}`,
+      '',
+      'STRATEGY HEALTH (live since go-live vs one-year backtest, R per trade)',
+      ...healthLines,
+      ...(streakLines.length ? ['Losing streaks:', ...streakLines] : []),
+      '',
+      'MARKET REGIME (H1 ATR percentile, 30-day -> last 3 days)',
+      ...(regimeError ? [`unavailable: ${regimeError}`] : regimes),
+      '',
+      'ANOMALIES',
+      ...(regimeError ? ['not checked (no candles)'] : anomalies.length ? anomalies : ['None: feeds complete, synthetic volatility at its stated level.']),
+      '',
+      `WHAT TO DO: ${todo}`,
+    ].join('\n');
+
+    const alert = (failing.length || streaks.length) && alertSettings
+      ? `\n\n${await sendTelegramAlert(supabase, alertSettings, 'Yaw: strategy health', report)}`
+      : '';
+    await setDone(supabase, 'yaw', task, `${report}${alert}`);
   } catch (err) {
     await setError(supabase, 'yaw', task, err instanceof Error ? err.message : 'Unknown error');
+  }
+}
+
+/** 1,400 H1 candles per live instrument (30-day regime baseline plus the 200-bar ATR percentile lookback). */
+async function fetchRegimeCandles(): Promise<Map<string, any[]>> {
+  const ws = new WebSocket('wss://api.derivws.com/trading/v1/options/ws/public');
+  const pending = new Map<number, (d: any) => void>();
+  ws.onmessage = (e: MessageEvent) => { const d = JSON.parse(String(e.data)); pending.get(d.req_id)?.(d); pending.delete(d.req_id); };
+  await new Promise<void>((resolve, reject) => { ws.onopen = () => resolve(); ws.onerror = () => reject(new Error('Deriv connection failed')); });
+  let id = 0;
+  try {
+    const out = new Map<string, any[]>();
+    await Promise.all(LIVE_INSTRUMENTS.map(inst => new Promise<void>((resolve, reject) => {
+      const req = ++id;
+      const timer = setTimeout(() => reject(new Error(`Deriv timeout for ${inst}`)), 20000);
+      pending.set(req, d => { clearTimeout(timer); if (d.error) reject(new Error(`${inst}: ${d.error.message}`)); else { out.set(inst, d.candles ?? []); resolve(); } });
+      ws.send(JSON.stringify({ ticks_history: DERIV_SYMBOLS[inst], adjust_start_time: 1, count: 1400, end: 'latest', granularity: 3600, style: 'candles', req_id: req }));
+    })));
+    return out;
+  } finally {
+    try { ws.close(); } catch { /* noop */ }
   }
 }
 
@@ -534,14 +631,14 @@ Deno.serve(async (req) => {
 
     if (employee === 'kofi') await runKofi(supabase);
     else if (employee === 'ama') await runAma(supabase, settings);
-    else if (employee === 'yaw') await runYaw(supabase);
+    else if (employee === 'yaw') await runYaw(supabase, settings);
     else if (employee === 'kobby') await runKobby(supabase);
     else if (employee === 'boss') await runBoss(supabase, settings);
     else {
       // Default: run the four workers, then Boss synthesizes and sends the digest.
       await runKofi(supabase);
       await runAma(supabase);
-      await runYaw(supabase);
+      await runYaw(supabase, settings);
       await runKobby(supabase);
       await runBoss(supabase, settings);
     }
