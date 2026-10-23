@@ -37,13 +37,13 @@ const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Throws instead of returning a placeholder: a missing key or an empty reply
 // must surface as an 'error' desk, never as a finished report.
-async function callDeepSeek(systemPrompt: string, userPrompt: string): Promise<string> {
+async function callDeepSeek(systemPrompt: string, userPrompt: string, opts: { maxTokens?: number; temperature?: number } = {}): Promise<string> {
   const apiKey = Deno.env.get('DEEPSEEK_API_KEY');
   if (!apiKey) throw new Error('DEEPSEEK_API_KEY is not configured — set it as a Supabase secret.');
 
   // The model spends part of this budget thinking before it writes, so a
   // tight limit can leave nothing for the reply itself.
-  let maxTokens = 1500;
+  let maxTokens = opts.maxTokens ?? 1500;
   let finishReason = 'unknown';
 
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -56,7 +56,7 @@ async function callDeepSeek(systemPrompt: string, userPrompt: string): Promise<s
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.4,
+        temperature: opts.temperature ?? 0.4,
         max_tokens: maxTokens,
       }),
     });
@@ -414,6 +414,7 @@ async function runYaw(supabase: ReturnType<typeof createClient>, alertSettings: 
 
     // ---- Market regime and feed anomalies, from Deriv H1 candles ----
     const regimes: string[] = [];
+    const regimeFacts: { instrument: string; pct30: number; pct3: number; regime: string }[] = [];
     const anomalies: string[] = [];
     let regimeError: string | null = null;
     try {
@@ -431,6 +432,7 @@ async function runYaw(supabase: ReturnType<typeof createClient>, alertSettings: 
           const b = BENCHMARKS[k], g = b.byRegime[regime];
           return g.n >= 10 ? `${b.label} earned ${g.avgR >= 0 ? '+' : ''}${g.avgR.toFixed(2)}R/trade in ${regime} regimes in backtest (vs ${b.avgR >= 0 ? '+' : ''}${b.avgR.toFixed(2)} overall)` : '';
         }).filter(Boolean);
+        regimeFacts.push({ instrument: inst, pct30: Number(r30.toFixed(1)), pct3: Number(r3.toFixed(1)), regime });
         regimes.push(`${inst.padEnd(8)} ${r30.toFixed(0).padStart(2)} -> ${r3.toFixed(0).padStart(2)}  ${regime.toUpperCase().padEnd(6)}${notes.length ? `  ${notes.join('; ')}` : ''}`);
 
         // Feed gaps in the last 72h (forex: weekday hours only).
@@ -495,10 +497,37 @@ async function runYaw(supabase: ReturnType<typeof createClient>, alertSettings: 
       `WHAT TO DO: ${todo}`,
     ].join('\n');
 
+    // DeepSeek checks the report against the raw numbers and the rules; it does not write it.
+    let check: string;
+    try {
+      const facts = {
+        rules: {
+          band: 'expected ± 2 × sdR / sqrt(n)',
+          status: `FAILING if live < lower band (any n); else "OK (too early)" if n < ${MIN_TRADES_FOR_VERDICT}; else WATCH if live < expected; else OK. NO TRADES if n = 0`,
+          streak: 'flag when current losing streak > backtest worst',
+          regime: 'from the last-3-day mean ATR percentile: wild >= 75, quiet < 25, else normal',
+        },
+        benchmarks: BENCHMARKS,
+        liveTradesR: rsBySetup,
+        computedHealth: health,
+        regimes: regimeFacts,
+        anomalies,
+      };
+      const answer = await callDeepSeek(
+        'You audit a trading report. Using ONLY the data and rules given, recompute every number, band, status, streak flag and regime in the report. Reply with exactly "VERIFIED" if all of it is correct; otherwise list each wrong item as "- <item>: report says X, data gives Y". No other text.',
+        `DATA:\n${JSON.stringify(facts)}\n\nREPORT:\n${report}`,
+        // Recomputing every figure takes long reasoning before the short answer.
+        { maxTokens: 8000, temperature: 0 },
+      );
+      check = answer.trim().toUpperCase().startsWith('VERIFIED') ? 'DeepSeek check: VERIFIED against the raw data.' : `DeepSeek check: DISCREPANCIES FOUND\n${answer.trim()}`;
+    } catch (llmErr) {
+      check = `DeepSeek check: not run (${llmErr instanceof Error ? llmErr.message : 'unknown error'}).`;
+    }
+
     const alert = (failing.length || streaks.length) && alertSettings
       ? `\n\n${await sendTelegramAlert(supabase, alertSettings, 'Yaw: strategy health', report)}`
       : '';
-    await setDone(supabase, 'yaw', task, `${report}${alert}`);
+    await setDone(supabase, 'yaw', task, `${report}\n\n${check}${alert}`);
   } catch (err) {
     await setError(supabase, 'yaw', task, err instanceof Error ? err.message : 'Unknown error');
   }
