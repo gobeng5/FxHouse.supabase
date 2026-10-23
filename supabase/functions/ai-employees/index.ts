@@ -455,7 +455,8 @@ async function runYaw(supabase: ReturnType<typeof createClient>, alertSettings: 
           const b = BENCHMARKS[k], g = b.byRegime[regime];
           return g.n >= 10 ? `${b.label}: ${g.avgR >= 0 ? '+' : ''}${g.avgR.toFixed(2)}R/trade (vs ${b.avgR >= 0 ? '+' : ''}${b.avgR.toFixed(2)} overall)` : '';
         }).filter(Boolean);
-        regimeFacts.push({ instrument: inst, pct30: Number(r30.toFixed(1)), pct3: Number(r3.toFixed(1)), regime });
+        // The same whole numbers the report prints, so the audit does not re-round 49.49 to 50.
+        regimeFacts.push({ instrument: inst, pct30: Number(r30.toFixed(0)), pct3: Number(r3.toFixed(0)), regime });
         regimes.push(`| ${inst} | ${r30.toFixed(0)} | ${r3.toFixed(0)} | ${REGIME_ICON[regime]} ${regime} | ${notes.join('; ')} |`);
 
         // Feed gaps in the last 72h (forex: weekday hours only).
