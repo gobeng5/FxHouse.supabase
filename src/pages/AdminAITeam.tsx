@@ -5,7 +5,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Header } from '@/components/Header';
 import { AIEmployeeAvatar } from '@/components/AIEmployeeAvatar';
-import { ShieldCheck, LineChart, Newspaper, ClipboardCheck, Briefcase, Loader2, RefreshCw } from 'lucide-react';
+import { AIReport } from '@/components/AIReport';
+import { ShieldCheck, LineChart, Newspaper, ClipboardCheck, Briefcase, FlaskConical, Loader2, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Employee {
@@ -31,6 +32,7 @@ const ICONS: Record<string, typeof Briefcase> = {
   ama: ClipboardCheck,
   yaw: LineChart,
   kobby: Newspaper,
+  esi: FlaskConical,
 };
 
 const STATUS_STYLE: Record<Activity['status'], string> = {
@@ -95,9 +97,7 @@ function Desk({ employee, activity }: { employee: Employee; activity: Activity |
       <CardContent className="space-y-2">
         <p className="text-xs text-muted-foreground">{employee.description}</p>
         {activity?.last_report && (
-          <div className="rounded-md bg-muted/50 p-3 text-sm whitespace-pre-wrap">
-            {activity.last_report}
-          </div>
+          <AIReport report={activity.last_report} />
         )}
         <p className="text-xs text-muted-foreground">Last updated {timeAgo(activity?.updated_at ?? null)}</p>
       </CardContent>
@@ -181,7 +181,7 @@ export default function AdminAITeam() {
           <Desk employee={boss} activity={activity[boss.id]} />
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4">
           {workers.map(e => (
             <Desk key={e.id} employee={e} activity={activity[e.id]} />
           ))}

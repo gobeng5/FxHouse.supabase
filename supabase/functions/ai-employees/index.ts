@@ -35,6 +35,27 @@ async function isAuthorized(req: Request, supabase: ReturnType<typeof createClie
 // if this model id ever starts erroring as deprecated.
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
+/**
+ * Reports are Markdown for the admin page; Telegram's Markdown has no tables or
+ * headings, so alerts get a plain copy: headings as lines, table rows joined with
+ * " · " (separator rows dropped), bullets as "•", and the characters Telegram's
+ * Markdown would misread removed.
+ */
+function toTelegramText(md: string): string {
+  return md.split('\n').flatMap(line => {
+    const t = line.trim();
+    if (/^\|?\s*:?-{2,}/.test(t) && /^[|\s:-]+$/.test(t)) return [];
+    if (t.startsWith('|')) return [t.replace(/^\||\|$/g, '').split('|').map(c => c.trim()).filter(Boolean).join(' · ')];
+    if (/^#{1,6}\s/.test(t)) return [t.replace(/^#{1,6}\s*/, '').toUpperCase()];
+    if (t.startsWith('> ')) return [t.slice(2)];
+    if (t.startsWith('- ')) return [`• ${t.slice(2)}`];
+    return [line];
+  }).join('\n').replace(/[_*`\[\]]/g, '');
+}
+
+// One layout for every model-written report; the admin page renders Markdown.
+const MD_FORMAT = ' Format in Markdown: the first line is a "### " heading with the verdict, starting with ✅ when all is clear or ❌ when something needs attention; then short "- " bullets, with **bold** for the numbers that matter. No tables and no other headings.';
+
 // Throws instead of returning a placeholder: a missing key or an empty reply
 // must surface as an 'error' desk, never as a finished report.
 async function callDeepSeek(systemPrompt: string, userPrompt: string, opts: { maxTokens?: number; temperature?: number } = {}): Promise<string> {
@@ -124,7 +145,7 @@ async function runKofi(supabase: ReturnType<typeof createClient>) {
     ].join('\n');
 
     const report = await callDeepSeek(
-      'You are Kofi, the security officer for a small trading-signals app. Report findings plainly, in under 120 words, no filler. If everything is clean, say so briefly — do not pad a clean report with caveats.',
+      'You are Kofi, the security officer for a small trading-signals app. Report findings plainly, in under 120 words, no filler. If everything is clean, say so briefly — do not pad a clean report with caveats.' + MD_FORMAT,
       `Here is what I checked just now:\n${facts}\n\nWrite the report.`,
     );
     await setDone(supabase, 'kofi', task, report);
@@ -188,7 +209,7 @@ async function sendTelegramAlert(supabase: ReturnType<typeof createClient>, sett
       action: 'send',
       bot_token: settings.telegram_bot_token,
       chat_id: settings.telegram_chat_id,
-      message: `🚨 *${title}*\n\n${text.replace(/[_*`\[\]]/g, '')}`,
+      message: `🚨 *${title}*\n\n${toTelegramText(text)}`,
     },
   });
   if (error || !data?.success) return `Alert: Telegram delivery FAILED — ${data?.error ?? error?.message ?? 'unknown error'}`;
@@ -365,7 +386,7 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
     let report: string;
     try {
       report = await callDeepSeek(
-        'You are Ama, QA for a trading-signal engine. Report four things: whether the hourly server job ran and the engine answered; whether every setup the live rules produced was saved as a signal; whether every signal that should alert was delivered to Telegram; and whether any open trade is past its hold limit. Under 150 words, plain text, no filler. Start with the verdict you are given, word for word. If setups were produced but never saved, or there are forex/XAU signals inside market-closed hours, make that the headline. Do not invent causes.',
+        'You are Ama, QA for a trading-signal engine. Report four things: whether the hourly server job ran and the engine answered; whether every setup the live rules produced was saved as a signal; whether every signal that should alert was delivered to Telegram; and whether any open trade is past its hold limit. Under 150 words, no filler. The heading is the verdict you are given, word for word. If setups were produced but never saved, or there are forex/XAU signals inside market-closed hours, make that the headline. Do not invent causes.' + MD_FORMAT,
         `Here is what I checked:\n${facts}\n\nVerdict: ${verdict}. Problems counted: ${problemCount}${jobConcern ? ' (plus a job health concern)' : ''}.\nWrite the report. Do not call a delivery confirmed unless it is in the "confirmed delivered" count.`,
       );
     } catch (llmErr) {
@@ -384,6 +405,8 @@ async function runAma(supabase: ReturnType<typeof createClient>, alertSettings: 
     await setError(supabase, 'ama', task, `${message}${alert}`);
   }
 }
+const REGIME_ICON: Record<string, string> = { quiet: '🟦', normal: '🟩', wild: '🟥' };
+
 async function runYaw(supabase: ReturnType<typeof createClient>, alertSettings: TelegramSettings = null) {
   const task = 'Strategy health & market regime';
   await setWorking(supabase, 'yaw', task);
@@ -425,15 +448,15 @@ async function runYaw(supabase: ReturnType<typeof createClient>, alertSettings: 
         const pct = atrPercentiles(h1);
         const recent = pct.slice(-72).filter(x => !Number.isNaN(x));
         const base = pct.slice(-720, -72).filter(x => !Number.isNaN(x));
-        if (!recent.length || !base.length) { regimes.push(`${inst.padEnd(8)} not enough history`); continue; }
+        if (!recent.length || !base.length) { regimes.push(`| ${inst} | — | — | not enough history | |`); continue; }
         const mean = (xs: number[]) => xs.reduce((x, y) => x + y, 0) / xs.length;
         const r3 = mean(recent), r30 = mean(base), regime = regimeOf(r3);
         const notes = (STRATEGIES_BY_INSTRUMENT[inst] ?? []).map(k => {
           const b = BENCHMARKS[k], g = b.byRegime[regime];
-          return g.n >= 10 ? `${b.label} earned ${g.avgR >= 0 ? '+' : ''}${g.avgR.toFixed(2)}R/trade in ${regime} regimes in backtest (vs ${b.avgR >= 0 ? '+' : ''}${b.avgR.toFixed(2)} overall)` : '';
+          return g.n >= 10 ? `${b.label}: ${g.avgR >= 0 ? '+' : ''}${g.avgR.toFixed(2)}R/trade (vs ${b.avgR >= 0 ? '+' : ''}${b.avgR.toFixed(2)} overall)` : '';
         }).filter(Boolean);
         regimeFacts.push({ instrument: inst, pct30: Number(r30.toFixed(1)), pct3: Number(r3.toFixed(1)), regime });
-        regimes.push(`${inst.padEnd(8)} ${r30.toFixed(0).padStart(2)} -> ${r3.toFixed(0).padStart(2)}  ${regime.toUpperCase().padEnd(6)}${notes.length ? `  ${notes.join('; ')}` : ''}`);
+        regimes.push(`| ${inst} | ${r30.toFixed(0)} | ${r3.toFixed(0)} | ${REGIME_ICON[regime]} ${regime} | ${notes.join('; ')} |`);
 
         // Feed gaps in the last 72h (forex: weekday hours only).
         const last72 = h1.filter((c: any) => c.epoch >= now - 72 * 3600);
@@ -469,32 +492,40 @@ async function runYaw(supabase: ReturnType<typeof createClient>, alertSettings: 
       ? `PROBLEM: ${[...failing.map(h => `${h.label} is below its backtest band`), ...streaks.map(h => `${h.label} losing streak ${h.currentLosingStreak} is past the backtest worst ${h.worstLosingStreak}`)].join('; ')}`
       : `ALL STRATEGIES WITHIN EXPECTATION (${failing.length} failing, ${watch.length} watch)`;
     const sign = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
-    const healthLines = health.map(h =>
-      `${h.label.padEnd(16)} ${String(h.n).padStart(3)} trades  live ${h.liveAvgR == null ? '  —  ' : sign(h.liveAvgR)}  expected ${sign(h.expected)}  band ${h.lower == null ? '—' : `${sign(h.lower)} … ${sign(h.upper!)}`}  ${h.status}`);
+    const STATUS_ICON: Record<string, string> = { OK: '✅', 'OK (too early)': '⏳', WATCH: '⚠️', FAILING: '❌', 'NO TRADES': '—' };
+    const healthRows = health.map(h =>
+      `| ${h.label} | ${h.n} | ${h.liveAvgR == null ? '—' : sign(h.liveAvgR)} | ${sign(h.expected)} | ${h.lower == null ? '—' : `${sign(h.lower)} … ${sign(h.upper!)}`} | ${STATUS_ICON[h.status]} ${h.status} |`);
     const streakLines = health.filter(h => h.currentLosingStreak > 0)
-      .map(h => `${h.label}: ${h.currentLosingStreak} loss(es) in a row (backtest worst ${h.worstLosingStreak})${h.streakBeyondBacktest ? ' — BEYOND BACKTEST' : ' — normal'}`);
+      .map(h => `- **${h.label}:** ${h.currentLosingStreak} loss${h.currentLosingStreak === 1 ? '' : 'es'} in a row (backtest worst ${h.worstLosingStreak})${h.streakBeyondBacktest ? ' — ❌ **beyond the backtest**' : ' — normal'}`);
     const todo = failing.length
-      ? `Consider pausing ${failing.map(h => h.label).join(', ')}: live results are below what chance allows for its backtest.`
+      ? `Consider pausing **${failing.map(h => h.label).join(', ')}**: live results are below what chance allows for its backtest.`
       : streaks.length
-        ? `Watch ${streaks.map(h => h.label).join(', ')}: the losing run is longer than any in the backtest.`
+        ? `Watch **${streaks.map(h => h.label).join(', ')}**: the losing run is longer than any in the backtest.`
         : watch.length
-          ? `Keep watching ${watch.map(h => h.label).join(', ')}: below expectation but within chance.`
-          : `Nothing to do. A verdict needs ~${MIN_TRADES_FOR_VERDICT} closed trades per strategy.`;
+          ? `Keep watching **${watch.map(h => h.label).join(', ')}**: below expectation but within chance.`
+          : `Nothing to do. A verdict needs about ${MIN_TRADES_FOR_VERDICT} closed trades per strategy.`;
 
     const report = [
-      `VERDICT: ${verdict}`,
+      `### ${failing.length || streaks.length ? '❌' : '✅'} ${verdict}`,
       '',
-      'STRATEGY HEALTH (live since go-live vs one-year backtest, R per trade)',
-      ...healthLines,
-      ...(streakLines.length ? ['Losing streaks:', ...streakLines] : []),
+      '#### Strategy health',
+      'Live R per trade since go-live, against the one-year backtest.',
       '',
-      'MARKET REGIME (H1 ATR percentile, 30-day -> last 3 days)',
-      ...(regimeError ? [`unavailable: ${regimeError}`] : regimes),
+      '| Strategy | Trades | Live R | Expected | 95% band | Status |',
+      '|---|--:|--:|--:|---|---|',
+      ...healthRows,
       '',
-      'ANOMALIES',
-      ...(regimeError ? ['not checked (no candles)'] : anomalies.length ? anomalies : ['None: feeds complete, synthetic volatility at its stated level.']),
+      ...(streakLines.length ? ['**Losing streaks**', ...streakLines, ''] : []),
+      '#### Market regime',
+      'H1 ATR percentile: 30-day average, then the last 3 days.',
       '',
-      `WHAT TO DO: ${todo}`,
+      ...(regimeError ? [`Unavailable: ${regimeError}`] : ['| Instrument | 30-day | 3-day | Regime | Backtest in this regime |', '|---|--:|--:|---|---|', ...regimes]),
+      '',
+      '#### Anomalies',
+      ...(regimeError ? ['Not checked (no candles).'] : anomalies.length ? anomalies.map(a => `- ⚠️ ${a}`) : ['None: feeds complete, synthetic volatility at its stated level.']),
+      '',
+      '#### What to do',
+      todo,
     ].join('\n');
 
     // DeepSeek checks the report against the raw numbers and the rules; it does not write it.
@@ -519,9 +550,9 @@ async function runYaw(supabase: ReturnType<typeof createClient>, alertSettings: 
         // Recomputing every figure takes long reasoning before the short answer.
         { maxTokens: 8000, temperature: 0 },
       );
-      check = answer.trim().toUpperCase().startsWith('VERIFIED') ? 'DeepSeek check: VERIFIED against the raw data.' : `DeepSeek check: DISCREPANCIES FOUND\n${answer.trim()}`;
+      check = answer.trim().toUpperCase().startsWith('VERIFIED') ? '> ✅ DeepSeek check: VERIFIED against the raw data.' : `> ❌ **DeepSeek check: DISCREPANCIES FOUND**\n\n${answer.trim()}`;
     } catch (llmErr) {
-      check = `DeepSeek check: not run (${llmErr instanceof Error ? llmErr.message : 'unknown error'}).`;
+      check = `> DeepSeek check: not run (${llmErr instanceof Error ? llmErr.message : 'unknown error'}).`;
     }
 
     const alert = (failing.length || streaks.length) && alertSettings
@@ -593,22 +624,38 @@ async function runEsi(supabase: ReturnType<typeof createClient>, alertSettings: 
     }
     const all = (suggestions ?? []).map((sg: any) => fresh.find(f => f.id === sg.id) ?? sg);
 
-    const perInstrument = Object.entries(run.summary ?? {}).map(([inst, v]: [string, any]) => {
-      const live = v.incumbent ? `live ${v.incumbent.name}: holdout ${fmt(v.incumbent.holdout)}` : 'live: none';
-      const best = v.bestHoldout ? `best tested ${v.bestHoldout.family}: holdout ${fmt(v.bestHoldout.holdout)}` : '';
-      return `${inst.padEnd(8)} ${v.configsTested} tested, ${v.passedComparison} beat the live strategy, ${v.finalists?.length ?? 0} luck-tested${v.suggestion ? ' → SUGGESTION' : ''}\n         ${live}${best ? `\n         ${best}` : ''}`;
-    });
-    const sugLines = all.map((sg: any) =>
-      `• ${sg.instrument}: ${sg.family} ${JSON.stringify(sg.params)}\n  candidate ${fmt(sg.candidate.full)} (holdout ${fmt(sg.candidate.holdout)}, luck ${(sg.candidate.luckShare * 100).toFixed(1)}%)\n  live      ${sg.incumbent ? fmt(sg.incumbent.full) : 'none'}\n  Why: ${sg.reason}\n  Status: ${sg.status}`);
+    const r = (x: any) => (x ? `${x.avgR >= 0 ? '+' : ''}${x.avgR}` : '—');
+    const params = (p: Record<string, unknown>) => Object.entries(p).map(([k, v]) => `${k} ${v}`).join(', ');
+    const instrumentRows = Object.entries(run.summary ?? {}).map(([inst, v]: [string, any]) =>
+      `| ${inst} | ${v.incumbent ? v.incumbent.name.replace(' (live)', '') : '—'} | ${r(v.incumbent?.holdout)} | ${v.bestHoldout ? `${v.bestHoldout.family} (${params(v.bestHoldout.params)})` : '—'} | ${r(v.bestHoldout?.holdout)} | ${v.passedComparison} | ${v.suggestion ? '💡 yes' : 'no'} |`);
+    const suggestionBlocks = all.map((sg: any) => [
+      `**💡 ${sg.instrument}: ${sg.family}**`,
+      `_${params(sg.params)}_`,
+      '',
+      '| | Trades | Win % | Avg R | Holdout R | Max DD | Luck |',
+      '|---|--:|--:|--:|--:|--:|--:|',
+      `| Candidate | ${sg.candidate.full.n} | ${sg.candidate.full.winRate} | ${r(sg.candidate.full)} | ${r(sg.candidate.holdout)} | ${sg.candidate.full.maxDrawdownR}R | ${(sg.candidate.luckShare * 100).toFixed(1)}% |`,
+      sg.incumbent
+        ? `| Live | ${sg.incumbent.full.n} | ${sg.incumbent.full.winRate} | ${r(sg.incumbent.full)} | ${r(sg.incumbent.holdout)} | ${sg.incumbent.full.maxDrawdownR}R | |`
+        : '| Live | — | — | — | — | — | |',
+      '',
+      `**Why:** ${sg.reason}`,
+      '',
+      `Status: \`${sg.status}\``,
+      '',
+    ].join('\n'));
 
     const report = [
-      `VERDICT: ${all.length ? `${all.length} SUGGESTION(S) — review before any change` : 'NO BETTER STRATEGY FOUND — keep the live strategies'}`,
-      `Run ${String(run.run_at).slice(0, 16)} UTC on data ${String(run.data_from).slice(0, 10)} → ${String(run.data_to).slice(0, 10)}; ${run.configs_tested} configurations tested.`,
-      'Bar: ≥30 trades, positive in train and holdout, t ≥ 2, beats the live strategy on avg R, win rate and drawdown, and under 1% of random-walk years do as well.',
+      `### ${all.length ? `💡 ${all.length} suggestion${all.length === 1 ? '' : 's'}: review before any change` : '✅ No better strategy found: keep the live strategies'}`,
+      `Run ${String(run.run_at).slice(0, 16).replace('T', ' ')} UTC · data ${String(run.data_from).slice(0, 10)} → ${String(run.data_to).slice(0, 10)} · ${run.configs_tested} configurations tested`,
       '',
-      ...(sugLines.length ? ['SUGGESTIONS', ...sugLines, ''] : []),
-      'BY INSTRUMENT',
-      ...perInstrument,
+      '> A suggestion needs ≥ 30 trades, profit in train and holdout, t ≥ 2, better average R, win rate and drawdown than the live strategy, and fewer than 1% of random-walk years doing as well.',
+      '',
+      ...(suggestionBlocks.length ? ['#### Suggestions', ...suggestionBlocks] : []),
+      '#### By instrument (holdout R per trade)',
+      '| Instrument | Live strategy | Live R | Best tested | Best R | Beat live | Suggest |',
+      '|---|---|--:|---|--:|--:|---|',
+      ...instrumentRows,
     ].join('\n');
 
     const alert = fresh.length && alertSettings
@@ -643,7 +690,7 @@ async function runKobby(supabase: ReturnType<typeof createClient>) {
       : 'No high-impact events found in the next 48 hours.';
 
     const report = await callDeepSeek(
-      'You are Kobby, covering economic news for a forex/gold trading app. Given real upcoming high-impact calendar events, briefly note which currency pairs or XAU/USD could see elevated volatility around them. Under 130 words. Do not give trading advice, just flag timing/volatility risk.',
+      'You are Kobby, covering economic news for a forex/gold trading app. Given real upcoming high-impact calendar events, briefly note which currency pairs or XAU/USD could see elevated volatility around them. Under 130 words. Do not give trading advice, just flag timing/volatility risk.' + MD_FORMAT,
       `Upcoming high-impact events:\n${facts}\n\nWrite the report.`,
     );
     await setDone(supabase, 'kobby', task, report);
@@ -671,7 +718,7 @@ async function runBoss(supabase: ReturnType<typeof createClient>, settings: { us
     }).join('\n\n');
 
     const digest = await callDeepSeek(
-      'You are the Boss, summarizing the employees\' reports into one digest for the human owner of this trading app. Be concise — under 150 words total. Lead with anything that needs attention (errors, regressions, high-impact news); routine all-clear items get one short line each.',
+      'You are the Boss, summarizing the employees\' reports into one digest for the human owner of this trading app. Be concise — under 150 words total. Lead with anything that needs attention (errors, regressions, high-impact news); routine all-clear items get one short line each.' + MD_FORMAT,
       `Today's reports:\n\n${facts}\n\nWrite the digest.`,
     );
 
@@ -684,7 +731,7 @@ async function runBoss(supabase: ReturnType<typeof createClient>, settings: { us
           action: 'send',
           bot_token: settings.telegram_bot_token,
           chat_id: settings.telegram_chat_id,
-          message: `🏢 *AI Team Daily Digest*\n\n${digest.replace(/[_*`\[\]]/g, '')}`,
+          message: `🏢 *AI Team Daily Digest*\n\n${toTelegramText(digest)}`,
         },
       });
       if (error || !data?.success) {
