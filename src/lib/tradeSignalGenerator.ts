@@ -66,7 +66,8 @@ import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../../supab
 import {
   evaluateEurUsdZScore,
   evaluateV75InsideBar,
-  evaluateV10DonchianMarubozu,
+  evaluateV10StarReversal,
+  evaluateBoom1000Donchian,
   GEM_SETUP_TYPES,
   type SelectiveGemSetup,
 } from '../../supabase/functions/_shared/analysis/selectiveGems.ts';
@@ -1148,63 +1149,6 @@ export const generateTradePlan = (
       },
     },
     dayTradeRecommendation: (() => {
-      if (instrument === 'V10') {
-        // V10 day trades come only from the Donchian marubozu gem: a market order at the signal candle's close.
-        const v10Gem = evaluateV10DonchianMarubozu(oneHourCandles, nowEpoch);
-        if (v10Gem) {
-          const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
-          const effectiveEntry = effectiveEntryWithSpread(v10Gem.direction, v10Gem.entry, spread);
-          return {
-            direction: v10Gem.direction,
-            confidence: v10Gem.confidence,
-            setupType: GEM_SETUP_TYPES.V10_DONCHIAN,
-            preferPendingOrder: false,
-            tradeType: 'day',
-            holdingPeriod: 'Up to 72h',
-            reasoning: v10Gem.reason,
-            triggerCloseEpoch: v10Gem.triggerCloseEpoch,
-            confidenceBreakdown: v10Gem.parameters,
-            risk: {
-              entry: v10Gem.entry,
-              effectiveEntry,
-              spreadApplied: spread,
-              atrPercentile: atrPercentile ?? undefined,
-              spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
-              stopLoss: v10Gem.stopLoss,
-              stopDistance: Math.round(Math.abs(effectiveEntry - v10Gem.stopLoss) / pip),
-              riskPercent: 1,
-              takeProfit1: v10Gem.takeProfit,
-              takeProfit2: v10Gem.takeProfit,
-              takeProfit3: v10Gem.takeProfit,
-              trailingStopLogic: 'None — fixed stop, single 2.5R target',
-              breakevenRule: 'None — fixed risk geometry',
-            },
-          };
-        }
-        return {
-          direction: 'ranging' as TrendDirection,
-          confidence: 0,
-          setupType: 'range',
-          preferPendingOrder: false,
-          tradeType: 'day',
-          holdingPeriod: '—',
-          reasoning: 'V10 Day: no Donchian marubozu breakout this hour. A setup needs an H1 candle with a 70% body and range of 0.8x ATR that closes beyond the last 20 hours.',
-          confidenceBreakdown: [],
-          risk: {
-            entry: currentPrice,
-            effectiveEntry: currentPrice,
-            spreadApplied: 0,
-            stopLoss: currentPrice,
-            stopDistance: 0,
-            riskPercent: 1,
-            takeProfit1: currentPrice,
-            takeProfit2: currentPrice,
-            takeProfit3: currentPrice,
-            trailingStopLogic: '—',
-            breakevenRule: '—',
-          },
-        };
-      }
       if (instrument === 'V75') {
         // V75 day trades come only from the inside-bar breakout gem: a pending order at the broken level.
         const v75Gem = evaluateV75InsideBar(fourHourCandles, oneHourCandles, fifteenMinCandles, nowEpoch);
@@ -1335,9 +1279,10 @@ export const generateTradePlan = (
   };
 
   if (isSyntheticIndex(instrument)) {
-    // Synthetics trade only two rules, both day trades: the V10 Donchian marubozu gem and
-    // the V75 inside-bar gem. The scored swing/day strategies and the BOOM1000 gem lost
-    // money after costs in testing, so they are switched off — the same as in the engine.
+    // Synthetics trade three rules, the same as the engine: the V10 H4 star reversal and the
+    // BOOM1000 H4 Donchian breakout (swing, adopted from Esi's research) and the V75
+    // inside-bar gem (day). The scored strategies lost money after costs in testing, so
+    // V25, V50 and V100 issue no signals.
     const retired = (tradeType: 'swing' | 'day', reasoning: string): TradePlan['recommendation'] => ({
       direction: 'ranging',
       confidence: 0,
@@ -1358,19 +1303,72 @@ export const generateTradePlan = (
         breakevenRule: '—',
       },
     });
-    const hasGem = instrument === 'V10' || instrument === 'V75';
+    const SWING_RULE: Record<string, { rule: string; tpR: number }> = {
+      V10: { rule: "an H4 morning or evening star: a big candle, a small one, then a big candle back past the first one's midpoint", tpR: 2 },
+      BOOM1000: { rule: 'an H4 candle with a 60% body and a range of at least 1.2 ATR closing beyond the last 40 H4 candles', tpR: 3 },
+    };
+    const swingSpec = SWING_RULE[instrument];
+    const swingGem = instrument === 'V10'
+      ? evaluateV10StarReversal(fourHourCandles, nowEpoch)
+      : instrument === 'BOOM1000'
+        ? evaluateBoom1000Donchian(fourHourCandles, nowEpoch)
+        : null;
+    const noStrategy = `No signals for ${instrument}: no tested strategy for it beat the spread. Synthetic signals come only from V10, V75 and BOOM1000.`;
+
+    let swing: TradePlan['recommendation'];
+    if (swingGem) {
+      const spread = getVolatilityAdjustedSpread(instrument, atrPercentile);
+      const effectiveEntry = effectiveEntryWithSpread(swingGem.direction, swingGem.entry, spread);
+      swing = {
+        direction: swingGem.direction,
+        confidence: swingGem.confidence,
+        setupType: swingGem.setupType as SetupType,
+        preferPendingOrder: false,
+        tradeType: 'swing',
+        holdingPeriod: 'Up to 7 days',
+        reasoning: swingGem.reason,
+        triggerCloseEpoch: swingGem.triggerCloseEpoch,
+        confidenceBreakdown: swingGem.parameters,
+        risk: {
+          entry: swingGem.entry,
+          effectiveEntry,
+          spreadApplied: spread,
+          atrPercentile: atrPercentile ?? undefined,
+          spreadMultiplier: appliedSpreadMultiplier(instrument, atrPercentile),
+          stopLoss: swingGem.stopLoss,
+          stopDistance: Math.round(Math.abs(effectiveEntry - swingGem.stopLoss) / pip),
+          riskPercent: 1,
+          takeProfit1: swingGem.takeProfit,
+          takeProfit2: swingGem.takeProfit,
+          takeProfit3: swingGem.takeProfit,
+          trailingStopLogic: `None — fixed stop, single ${swingSpec.tpR}R target`,
+          breakevenRule: 'None — fixed risk geometry',
+        },
+      };
+    } else {
+      swing = retired('swing', swingSpec
+        ? `${instrument} Swing: no setup this hour. A setup needs ${swingSpec.rule}.`
+        : instrument === 'V75'
+          ? 'Swing signals are retired for V75. It trades one strategy — see the day-trade signal.'
+          : noStrategy);
+    }
+    const day = instrument === 'V75'
+      ? plan.dayTradeRecommendation
+      : retired('day', swingSpec ? `${instrument} trades swing only — see the swing signal.` : noStrategy);
+    const lastStep = instrument === 'V75'
+      ? 'No swing order for V75 — see the day-trade signal'
+      : swingGem
+        ? `Execute ${swingGem.direction === 'bullish' ? 'BUY' : 'SELL'} at ${swingGem.entry.toFixed(decimals)}, stop ${swingGem.stopLoss.toFixed(decimals)}, target ${swingGem.takeProfit.toFixed(decimals)}`
+        : swingSpec ? `No ${instrument} setup this hour — no order to place` : `No order for ${instrument}`;
+
     return {
       ...plan,
-      recommendation: retired('swing', hasGem
-        ? `Swing signals are retired for ${instrument}. It trades one strategy — see the day-trade signal.`
-        : `No signals for ${instrument}: no tested strategy for it beat the spread. Synthetic signals come only from V10 and V75.`),
-      dayTradeRecommendation: hasGem
-        ? plan.dayTradeRecommendation
-        : retired('day', `No signals for ${instrument}: no tested strategy for it beat the spread. Synthetic signals come only from V10 and V75.`),
+      recommendation: swing,
+      dayTradeRecommendation: day,
       keyLevels: plan.keyLevels.filter(l => l.type === 'support' || l.type === 'resistance'),
       executionPlan: {
         ...plan.executionPlan,
-        preLondonChecklist: [...plan.executionPlan.preLondonChecklist.slice(0, -1), hasGem ? `No swing order for ${instrument} — see the day-trade signal` : `No order for ${instrument}`],
+        preLondonChecklist: [...plan.executionPlan.preLondonChecklist.slice(0, -1), lastStep],
       },
     };
   }

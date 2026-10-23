@@ -24,7 +24,7 @@
 import { getVolatilityAdjustedSpread } from '../src/lib/spreadConfig';
 import { atrSeries, cleanSeries, loadData, simulate, stats } from './lib';
 import type { Series, Stats, Trade } from './lib';
-import { donchianMarubozu, insideBarHourly, randomWalk } from './synthetic-pick-study';
+import { insideBarHourly, randomWalk } from './synthetic-pick-study';
 import { candlePattern, h4ImpulseD1, starReversal, sweepPinBar } from './unserved-synthetics-study';
 import { PRIMARY, runInstrument } from './smc-choch-fvg';
 
@@ -39,7 +39,7 @@ type Run = (instrument: string, s: Series) => Trade[];
 interface Config { family: string; params: Record<string, number | string>; run: Run; forexOnly?: boolean }
 
 // ---- Donchian body breakout, generalised (the live V10 rule is h1 / 20 / 0.7 / 0.8 / 2.5) ----
-function donchian(tf: 'h1' | 'h4', lookback: number, bodyMin: number, rangeMin: number, tpR: number): Run {
+export function donchian(tf: 'h1' | 'h4', lookback: number, bodyMin: number, rangeMin: number, tpR: number): Run {
   return (instrument, s) => {
     const cs = s[tf], atr = atrSeries(cs, 14), g = tf === 'h1' ? 3600 : 14400;
     const spread = getVolatilityAdjustedSpread(instrument as never, null);
@@ -78,9 +78,10 @@ for (const rr of [1.5, 2, 2.5, 3]) for (const h1Fractal of [2, 3]) {
 /** What the app trades on each instrument now (null = nothing). */
 const INCUMBENT: Record<string, { name: string; run: Run } | null> = {
   ...Object.fromEntries(FOREX.map(i => [i, { name: 'SMC CHoCH + FVG (live)', run: (inst: string, s: Series) => runInstrument(inst, s, PRIMARY) }])),
-  V10: { name: 'V10 Donchian marubozu (live)', run: (i, s) => donchianMarubozu(i, s) },
+  V10: { name: 'V10 H4 star reversal (live)', run: (i, s) => candlePattern(i, s, 'h4', starReversal, 2) },
   V75: { name: 'V75 inside-bar (live)', run: (i, s) => insideBarHourly(i, s, 'level') },
-  V25: null, V50: null, V100: null, BOOM1000: null,
+  BOOM1000: { name: 'BOOM1000 H4 Donchian (live)', run: (i, s) => donchian('h4', 40, 0.6, 1.2, 3)(i, s) },
+  V25: null, V50: null, V100: null,
 };
 
 interface Scored { full: Stats; train: Stats; holdout: Stats }

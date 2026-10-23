@@ -3,6 +3,7 @@ import { getSpread, effectiveEntry } from '@/lib/spreadConfig';
 
 import { Link, useNavigate } from 'react-router-dom';
 import { TradeRecommendation as TradeRecType, TradingInstrument, TrendDirection, getInstrumentDecimals, ConfidenceBreakdownItem } from '@/types/trading';
+import { strategyName } from '../../supabase/functions/_shared/analysis/strategyNames.ts';
 import { cn } from '@/lib/utils';
 import { TrendingUp, TrendingDown, Minus, Clock, Target, Shield, Crosshair, Calendar, Zap, AlertCircle, History, ChevronDown, ChevronUp, ExternalLink, Info, BookOpen, Loader2, Send } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -69,21 +70,8 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
   const displayDirection = isRanging ? 'NO TRADE' : direction;
   // Rule-based strategies (SMC or v2.1 selective gems) have fixed targets and checklists
   const isSmc = setupType === 'smc_choch_fvg' || setupType.startsWith('gem_');
-  const displaySetup = isRanging
-    ? 'Wait for clarity'
-    : setupType === 'smc_choch_fvg'
-      ? 'SMC CHoCH + FVG'
-      : setupType === 'gem_gbpjpy_momentum'
-        ? 'GBP/JPY Momentum Swing'
-        : setupType === 'gem_eurusd_zscore'
-          ? 'EUR/USD MTF Z-Score'
-          : setupType === 'gem_boom1000_momentum'
-            ? 'BOOM1000 MTF Momentum'
-            : setupType === 'gem_v75_insidebar'
-              ? 'V75 Inside-Bar Breakout'
-              : setupType === 'gem_v10_donchian'
-                ? 'V10 Donchian Marubozu'
-                : setupType.replace(/_/g, ' ');
+  // Same names as the Telegram alerts (shared table).
+  const displaySetup = isRanging ? 'Wait for clarity' : strategyName(setupType);
 
   return (
     <div className="space-y-4">

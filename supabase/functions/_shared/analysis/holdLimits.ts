@@ -14,6 +14,8 @@ const HOLD_HOURS_BY_SETUP: Record<string, number> = {
   smc_choch_fvg: 72,          // backtest/smc-choch-fvg.ts, 72h trade limit
   gem_v75_insidebar: 48,      // backtest/synthetic-pick-study.ts
   gem_v10_donchian: 72,       // backtest/synthetic-pick-study.ts
+  gem_v10_star: 168,          // backtest/research-agent.ts (H4 rules, 7 days)
+  gem_boom1000_donchian: 168, // backtest/research-agent.ts (H4 rules, 7 days)
   gem_eurusd_zscore: 120,     // backtest/forwardtest-2.1.ts, swing
   gem_gbpjpy_momentum: 120,   // backtest/forwardtest-2.1.ts, swing
   gem_boom1000_momentum: 48,  // backtest/forwardtest-2.1.ts, day

@@ -270,6 +270,7 @@ export function evaluateSmcChochFvg(
 const MARKET_ENTRY_TYPES: readonly string[] = [
   GEM_SETUP_TYPES.EURUSD_ZSCORE, GEM_SETUP_TYPES.V10_DONCHIAN,
   GEM_SETUP_TYPES.GBPJPY_MOMENTUM, GEM_SETUP_TYPES.BOOM1000_MOMENTUM,
+  GEM_SETUP_TYPES.V10_STAR, GEM_SETUP_TYPES.BOOM1000_DONCHIAN,
 ];
 const HOUR_START_TYPES: readonly string[] = [SMC_SETUP_TYPE, GEM_SETUP_TYPES.V75_INSIDEBAR, ...MARKET_ENTRY_TYPES];
 export const resolutionStartEpoch = (setupType: string | null | undefined, generatedAtEpoch: number): number =>

@@ -161,7 +161,7 @@ const AMA_REPLAY_HOURS = 6;
 
 const DERIV_SYMBOLS: Record<string, string> = {
   'EUR/USD': 'frxEURUSD', 'GBP/USD': 'frxGBPUSD', 'USD/JPY': 'frxUSDJPY', 'AUD/USD': 'frxAUDUSD',
-  'GBP/JPY': 'frxGBPJPY', 'XAU/USD': 'frxXAUUSD', V10: 'R_10', V75: 'R_75',
+  'GBP/JPY': 'frxGBPJPY', 'XAU/USD': 'frxXAUUSD', V10: 'R_10', V75: 'R_75', BOOM1000: 'BOOM1000',
 };
 
 /** Recent candles for each live instrument from Deriv's public feed, one socket for all requests. */

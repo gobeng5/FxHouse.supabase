@@ -11,7 +11,8 @@ import { alertHeader, strategyLabel, strategyName } from '../_shared/analysis/st
 import {
   evaluateEurUsdZScore,
   evaluateV75InsideBar,
-  evaluateV10DonchianMarubozu,
+  evaluateV10StarReversal,
+  evaluateBoom1000Donchian,
   GEM_SETUP_TYPES,
   type SelectiveGemSetup,
 } from '../_shared/analysis/selectiveGems.ts';
@@ -2029,11 +2030,11 @@ Deno.serve(async (req) => {
             }
             candidates = [smc ?? gemSignal];
           } else {
-            // Synthetics trade only two rules: the V10 Donchian marubozu gem and the V75
-            // inside-bar gem, both day trades. The scored swing/day strategies and the
-            // BOOM1000 gem lost money after costs in testing, so V25, V50, V100 and
-            // BOOM1000 issue no signals.
-            if (instrument !== 'V10' && instrument !== 'V75') continue;
+            // Synthetics trade three rules: the V10 H4 star reversal and the BOOM1000 H4
+            // Donchian breakout (swing, adopted from Esi's research) and the V75 inside-bar
+            // gem (day). The scored strategies lost money after costs in testing, so V25,
+            // V50 and V100 issue no signals.
+            if (instrument !== 'V10' && instrument !== 'V75' && instrument !== 'BOOM1000') continue;
             const [fourHour, oneHour, fifteenMin] = await Promise.all([
               fetchCandles(symbol, 14400, 250),
               fetchCandles(symbol, 3600, 200),
@@ -2041,8 +2042,10 @@ Deno.serve(async (req) => {
             ]);
             const nowEpoch = Math.floor(Date.now() / 1000);
             const gem = instrument === 'V10'
-              ? evaluateV10DonchianMarubozu(oneHour, nowEpoch)
-              : evaluateV75InsideBar(fourHour, oneHour, fifteenMin, nowEpoch);
+              ? evaluateV10StarReversal(fourHour, nowEpoch)
+              : instrument === 'BOOM1000'
+                ? evaluateBoom1000Donchian(fourHour, nowEpoch)
+                : evaluateV75InsideBar(fourHour, oneHour, fifteenMin, nowEpoch);
             candidates = [gem ? generateSelectiveGemSignal(gem, oneHour, nowEpoch) : null];
           }
 

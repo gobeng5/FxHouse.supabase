@@ -33,9 +33,13 @@ export const BENCHMARKS: Record<string, Benchmark> = {
     label: 'V75 inside-bar', liveSince: '2026-10-15T21:00:00Z', avgR: 0.476, sdR: 1.431, winRate: 52.1, worstLosingStreak: 5, tradesPerYear: 96,
     byRegime: { quiet: { n: 22, avgR: 0.612 }, normal: { n: 44, avgR: 0.121 }, wild: { n: 30, avgR: 0.898 } },
   },
-  gem_v10_donchian: {
-    label: 'V10 Donchian', liveSince: '2026-10-16T08:00:00Z', avgR: 0.163, sdR: 1.649, winRate: 33.4, worstLosingStreak: 11, tradesPerYear: 302,
-    byRegime: { quiet: { n: 55, avgR: 0.145 }, normal: { n: 140, avgR: 0.249 }, wild: { n: 99, avgR: 0.003 } },
+  gem_v10_star: {
+    label: 'V10 Star', liveSince: '2026-10-23T22:00:00Z', avgR: 0.409, sdR: 1.499, winRate: 47.7, worstLosingStreak: 3, tradesPerYear: 44,
+    byRegime: { quiet: { n: 8, avgR: -0.625 }, normal: { n: 20, avgR: 1.25 }, wild: { n: 16, avgR: -0.124 } },
+  },
+  gem_boom1000_donchian: {
+    label: 'BOOM1000 Donchian', liveSince: '2026-10-23T22:00:00Z', avgR: 0.559, sdR: 1.934, winRate: 39.6, worstLosingStreak: 5, tradesPerYear: 48,
+    byRegime: { quiet: { n: 14, avgR: 0.427 }, normal: { n: 12, avgR: 0.998 }, wild: { n: 22, avgR: 0.403 } },
   },
   smc_choch_fvg: {
     label: 'SMC (6 pairs)', liveSince: '2026-10-11T13:00:00Z', avgR: 0.392, sdR: 1.509, winRate: 49.2, worstLosingStreak: 6, tradesPerYear: 59,
@@ -50,7 +54,8 @@ export const BENCHMARKS: Record<string, Benchmark> = {
 /** Which strategies trade each live instrument, for the regime notes. */
 export const STRATEGIES_BY_INSTRUMENT: Record<string, string[]> = {
   V75: ['gem_v75_insidebar'],
-  V10: ['gem_v10_donchian'],
+  V10: ['gem_v10_star'],
+  BOOM1000: ['gem_boom1000_donchian'],
   'EUR/USD': ['smc_choch_fvg', 'gem_eurusd_zscore'],
   'GBP/USD': ['smc_choch_fvg'], 'USD/JPY': ['smc_choch_fvg'], 'AUD/USD': ['smc_choch_fvg'],
   'GBP/JPY': ['smc_choch_fvg'], 'XAU/USD': ['smc_choch_fvg'],
