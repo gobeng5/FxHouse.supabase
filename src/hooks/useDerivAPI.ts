@@ -105,7 +105,9 @@ export const useDerivAPI = (): UseDerivAPIReturn => {
           const data = JSON.parse(event.data);
           
           if (data.error) {
-            console.error('Deriv API error:', data.error);
+            // A closed market (weekends, holidays) is expected, not an error.
+            if (data.error.code === 'MarketIsClosed') console.info('Deriv: market closed —', data.error.message);
+            else console.error('Deriv API error:', data.error);
             if (data.error.code === 'MarketIsClosed') {
               setIsMarketClosed(true);
               setError('Market is closed (weekends/holidays)');
