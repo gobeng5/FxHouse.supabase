@@ -6,6 +6,7 @@ import { TradeRecommendation as TradeRecType, TradingInstrument } from '@/types/
 import { GEM_SETUP_TYPES } from '@/lib/selectiveGems';
 import { toast } from 'sonner';
 import { formatLotSuggestion, suggestLots } from '../../supabase/functions/_shared/analysis/positionSize.ts';
+import { alertHeader, strategyLabel } from '../../supabase/functions/_shared/analysis/strategyNames.ts';
 
 // "💰 Lot size: …" from the saved balance and risk %; empty when no balance is set.
 const lotLine = (instrument: string, entry: number, stopLoss: number, balance: number | null | undefined, riskPercent: number | undefined) => {
@@ -89,10 +90,10 @@ export const useTelegramAlert = () => {
 
     const gate = extractStructuralGate(signal.reasoning || '');
     const message = [
-      `📊 *FX Swing Bot Signal*`,
+      `📊 *${alertHeader(signal.trade_type)}*`,
       ``,
       `🏷 *${signal.instrument}* — ${direction}`,
-      `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : isPendingGem ? 'V75 Inside-Bar Breakout (pending order)' : isGem ? `Validated Gem (${signal.setup_type.replace('gem_', '').replace('_', ' ')})` : signal.trade_type.toUpperCase()}`,
+      `📈 Strategy: ${strategyLabel(signal.setup_type)}`,
       // Gem confidence is a fixed number and the gate a default label, so gem alerts leave both out.
       isSmc || isGem ? '' : `🎯 Confidence: ${signal.confidence}%`,
       ``,
@@ -107,7 +108,7 @@ export const useTelegramAlert = () => {
           ]),
       `📐 R:R: \`${rr.toFixed(1)}\``,
       lotLine(signal.instrument, Number(signal.entry_price), Number(signal.stop_loss), settings.account_balance, settings.risk_percent_per_trade),
-      isSmc ? `⏳ Dropped if not filled within 24h` : isPendingGem ? `⏳ Dropped if not filled within 4h` : isGem ? `⚡ Validated Gem Setup` : '',
+      isSmc ? `⏳ Dropped if not filled within 24h` : isPendingGem ? `⏳ Dropped if not filled within 4h` : isGem ? `⚡ Market order: enter now` : '',
       ...triggerLines(signal.confluence_breakdown),
       ``,
       isGem ? '' : `🔒 Gate: ${gate}`,
@@ -127,7 +128,6 @@ export const useTelegramAlert = () => {
     const direction = rec.direction === 'bullish' ? '🟢 LONG' : rec.direction === 'bearish' ? '🔴 SHORT' : '⚠️ RANGING';
     const isSmc = rec.setupType === 'smc_choch_fvg';
     const isGem = isGemSetupType(rec.setupType);
-    const isPendingGem = rec.setupType === GEM_SETUP_TYPES.V75_INSIDEBAR;
     const targetPrice = isSmc || isGem ? rec.risk.takeProfit1 : rec.risk.takeProfit2;
     const rr = rec.direction !== 'ranging' && targetPrice
       ? Math.abs(targetPrice - rec.risk.entry) / Math.abs(rec.risk.entry - rec.risk.stopLoss)
@@ -135,16 +135,10 @@ export const useTelegramAlert = () => {
 
     const gate = extractStructuralGate(rec.reasoning);
     const message = [
-      `📊 *FxHouse Signal*`,
+      `📊 *${alertHeader(rec.tradeType)}*`,
       ``,
       `🏷 *${pair}* — ${direction}`,
-      isSmc
-        ? `📈 Type: SMC CHoCH + FVG (limit order)`
-        : isPendingGem
-        ? `📈 Type: V75 Inside-Bar Breakout (pending order)`
-        : isGem
-        ? `📈 Type: Validated Gem (${rec.setupType.replace('gem_', '').replace('_', ' ')})`
-        : `📈 Type: ${rec.tradeType.toUpperCase()} | Setup: ${escapeMd(rec.setupType.replace('_', ' '))}`,
+      `📈 Strategy: ${strategyLabel(rec.setupType)}`,
       isSmc || isGem ? '' : `🎯 Confidence: ${rec.confidence}%`,
       ``,
       `▶️ Entry: \`${rec.risk.entry.toFixed(decimals)}\``,

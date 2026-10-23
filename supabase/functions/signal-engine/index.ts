@@ -7,6 +7,7 @@ import type { OrderBlock, FairValueGap } from '../_shared/analysis/smcAnalysis.t
 import { entryNeedsFill, evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../_shared/analysis/smcChochFvg.ts';
 import { maxHoldHours } from '../_shared/analysis/holdLimits.ts';
 import { formatLotSuggestion, suggestLots } from '../_shared/analysis/positionSize.ts';
+import { alertHeader, strategyLabel, strategyName } from '../_shared/analysis/strategyNames.ts';
 import {
   evaluateEurUsdZScore,
   evaluateV75InsideBar,
@@ -181,10 +182,10 @@ async function sendTelegramSignalAlert(
   }
 
   const message = [
-    `📊 *FX Swing Bot Signal*`,
+    `📊 *${alertHeader(saved.trade_type)}*`,
     ``,
     `🏷 *${saved.instrument}* — ${direction}`,
-    `📈 Type: ${isSmc ? 'SMC CHoCH + FVG (limit order)' : isPendingGem ? 'V75 Inside-Bar Breakout (pending order)' : isGem ? `Validated Gem (${saved.setup_type.replace('gem_', '').replace('_', ' ')})` : saved.trade_type.toUpperCase()}`,
+    `📈 Strategy: ${strategyLabel(saved.setup_type)}`,
     // Gem confidence is a fixed number and the gate a default label, so gem alerts leave both out.
     isSmc || isGem ? '' : `🎯 Confidence: ${saved.confidence}%`,
     ``,
@@ -199,7 +200,7 @@ async function sendTelegramSignalAlert(
         ]),
     `📐 R:R: \`${rr.toFixed(1)}\``,
     lotLine,
-    isSmc ? `⏳ Dropped if not filled within 24h` : isPendingGem ? `⏳ Dropped if not filled within 4h` : isGem ? `⚡ Validated Gem Setup` : '',
+    isSmc ? `⏳ Dropped if not filled within 24h` : isPendingGem ? `⏳ Dropped if not filled within 4h` : isGem ? `⚡ Market order: enter now` : '',
     ...triggerLines(saved.confluence_breakdown),
     ``,
     isGem ? '' : `🔒 Gate: ${gate}`,
@@ -282,15 +283,6 @@ async function sendTelegramSignalAlert(
 }
 
 // =================== CLOSE ALERTS ===================
-const STRATEGY_LABELS: Record<string, string> = {
-  smc_choch_fvg: 'SMC CHoCH + FVG',
-  gem_v75_insidebar: 'V75 Inside-Bar Breakout',
-  gem_v10_donchian: 'V10 Donchian Marubozu',
-  gem_eurusd_zscore: 'EUR/USD MTF Z-Score',
-  gem_gbpjpy_momentum: 'GBP/JPY Momentum',
-  gem_boom1000_momentum: 'BOOM1000 MTF Momentum',
-};
-
 const formatHeld = (minutes: number | null): string => {
   if (minutes == null) return 'unknown';
   const d = Math.floor(minutes / 1440), h = Math.floor((minutes % 1440) / 60), m = minutes % 60;
@@ -333,7 +325,7 @@ async function sendCloseAlert(supabase: ReturnType<typeof createClient>, id: str
   const r = row.r_multiple != null ? Number(row.r_multiple) : null;
   const pips = row.actual_pnl_pips != null ? Number(row.actual_pnl_pips) : null;
   const sign = (v: number) => (v > 0 ? '+' : '');
-  const strategy = STRATEGY_LABELS[row.setup_type] ?? `${String(row.trade_type).toUpperCase()} · ${escapeMd(String(row.setup_type ?? '').replace(/_/g, ' '))}`;
+  const strategy = `${strategyName(row.setup_type)} · ${row.trade_type === 'day' ? 'day trade' : 'swing trade'}`;
 
   const message = [
     header,
