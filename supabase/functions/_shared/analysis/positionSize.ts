@@ -99,6 +99,20 @@ export function suggestLots(p: {
   };
 }
 
+/**
+ * P&L in USD of a closed trade from its lot size, with the same contract table:
+ * direction × (exit − entry) × contract size × lots, JPY converted to USD.
+ * Null for an instrument with no known contract.
+ */
+export function tradePnlUsd(p: {
+  instrument: string; direction: 1 | -1; entry: number; exit: number; lots: number; usdJpy?: number | null;
+}): number | null {
+  const spec = CONTRACT_SPECS[p.instrument] ?? (p.instrument.includes('/') ? null : SYNTHETIC_FALLBACK);
+  if (!spec || !(p.lots > 0)) return null;
+  const usdPerQuote = spec.quote === 'JPY' ? 1 / (p.instrument === 'USD/JPY' ? p.exit : p.usdJpy && p.usdJpy > 0 ? p.usdJpy : FALLBACK_USDJPY) : 1;
+  return p.direction * (p.exit - p.entry) * spec.contractSize * p.lots * usdPerQuote;
+}
+
 const stepDecimals = (step: number) => Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
 const usd = (v: number) => `$${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 

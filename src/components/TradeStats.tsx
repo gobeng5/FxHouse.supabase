@@ -67,12 +67,12 @@ export function TradeStats({ stats }: TradeStatsProps) {
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2">
               <TrendingUp className="w-4 h-4" />
-              Total P&L (pips)
+              Total P&L (R)
             </div>
             <div className={`text-3xl font-bold font-mono ${
-              stats.totalPnlPips >= 0 ? 'text-bullish' : 'text-bearish'
+              stats.totalR >= 0 ? 'text-bullish' : 'text-bearish'
             }`}>
-              {stats.totalPnlPips >= 0 ? '+' : ''}{formatNumber(stats.totalPnlPips)}
+              {stats.totalR >= 0 ? '+' : ''}{formatNumber(stats.totalR)}R
             </div>
             <p className="text-xs text-muted-foreground mt-2">
               {stats.totalTrades} closed trades

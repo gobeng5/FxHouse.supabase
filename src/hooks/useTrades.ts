@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { toast } from 'sonner';
+import { tradePnlUsd } from '../../supabase/functions/_shared/analysis/positionSize.ts';
 
 export interface Trade {
   id: string;
@@ -74,6 +75,8 @@ export interface TradeStats {
   winRate: number;
   profitFactor: number;
   totalPnlPips: number;
+  /** Sum of each trade's R (P&L over its entry-to-stop distance); comparable across instruments. */
+  totalR: number;
   totalPnlAmount: number;
   averageWin: number;
   averageLoss: number;
@@ -139,6 +142,21 @@ export function useTrades() {
     const totalWinPips = wins.reduce((sum, t) => sum + (t.pnl_pips || 0), 0);
     const totalLossPips = Math.abs(losses.reduce((sum, t) => sum + (t.pnl_pips || 0), 0));
 
+    // Pips are not comparable across instruments (one V75 "pip" is 0.01 points), so money
+    // and R are measured per trade: the logged amount, or one estimated from the lot size.
+    const dirOf = (t: Trade): 1 | -1 => (t.direction === 'BUY' ? 1 : -1);
+    const usdOf = (t: Trade): number =>
+      t.pnl_amount ?? (t.exit_price != null
+        ? tradePnlUsd({ instrument: t.instrument, direction: dirOf(t), entry: Number(t.entry_price), exit: Number(t.exit_price), lots: Number(t.lot_size) }) ?? 0
+        : 0);
+    const rOf = (t: Trade): number => {
+      const risk = t.stop_loss != null ? Math.abs(Number(t.entry_price) - Number(t.stop_loss)) : 0;
+      return risk > 0 && t.exit_price != null ? (dirOf(t) * (Number(t.exit_price) - Number(t.entry_price))) / risk : 0;
+    };
+    const usdPnls = closedTrades.map(usdOf);
+    const grossWinUsd = usdPnls.filter(v => v > 0).reduce((a, b) => a + b, 0);
+    const grossLossUsd = Math.abs(usdPnls.filter(v => v < 0).reduce((a, b) => a + b, 0));
+
     const byInstrument: Record<string, { wins: number; losses: number; pnl: number }> = {};
     const bySetup: Record<string, { wins: number; losses: number; pnl: number }> = {};
 
@@ -184,9 +202,10 @@ export function useTrades() {
     setStats({
       totalTrades: closedTrades.length,
       winRate: closedTrades.length > 0 ? (wins.length / closedTrades.length) * 100 : 0,
-      profitFactor: totalLossPips > 0 ? totalWinPips / totalLossPips : totalWinPips > 0 ? Infinity : 0,
+      profitFactor: grossLossUsd > 0 ? grossWinUsd / grossLossUsd : grossWinUsd > 0 ? Infinity : 0,
       totalPnlPips: closedTrades.reduce((sum, t) => sum + (t.pnl_pips || 0), 0),
-      totalPnlAmount: closedTrades.reduce((sum, t) => sum + (t.pnl_amount || 0), 0),
+      totalR: closedTrades.reduce((sum, t) => sum + rOf(t), 0),
+      totalPnlAmount: usdPnls.reduce((a, b) => a + b, 0),
       averageWin: wins.length > 0 ? totalWinPips / wins.length : 0,
       averageLoss: losses.length > 0 ? totalLossPips / losses.length : 0,
       largestWin: winPnls.length > 0 ? Math.max(...winPnls) : 0,

@@ -18,7 +18,7 @@ interface AnalysisSectionProps {
 }
 
 export const AnalysisSection = ({ daily, fourHour, indicators, candlesticks, pair, currentPrice, priceActionAnalysis }: AnalysisSectionProps) => {
-  const decimals = pair === 'USD/JPY' ? 2 : 4;
+  const decimals = getInstrumentDecimals(pair);
 
   const TrendIcon = daily.trend === 'bullish' ? TrendingUp : daily.trend === 'bearish' ? TrendingDown : Minus;
   const trendColor = daily.trend === 'bullish' ? 'text-bullish' : daily.trend === 'bearish' ? 'text-bearish' : 'text-muted-foreground';
@@ -321,12 +321,12 @@ export const AnalysisSection = ({ daily, fourHour, indicators, candlesticks, pai
                       <div className="flex gap-4 text-xs mt-1">
                         {pattern.breakoutLevel && (
                           <span className="text-muted-foreground">
-                            Breakout: <span className="text-primary font-mono">{pattern.breakoutLevel.toFixed(pair === 'USD/JPY' ? 2 : 4)}</span>
+                            Breakout: <span className="text-primary font-mono">{pattern.breakoutLevel.toFixed(getInstrumentDecimals(pair))}</span>
                           </span>
                         )}
                         {pattern.priceTarget && (
                           <span className="text-muted-foreground">
-                            Target: <span className="text-primary font-mono">{pattern.priceTarget.toFixed(pair === 'USD/JPY' ? 2 : 4)}</span>
+                            Target: <span className="text-primary font-mono">{pattern.priceTarget.toFixed(getInstrumentDecimals(pair))}</span>
                           </span>
                         )}
                       </div>

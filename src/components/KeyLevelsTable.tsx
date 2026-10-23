@@ -38,14 +38,14 @@ const getStrengthBadge = (strength: PriceLevel['strength']) => {
 };
 
 export const KeyLevelsTable = ({ levels, currentPrice, criticalInvalidation, pair }: KeyLevelsTableProps) => {
-  const decimals = pair === 'USD/JPY' ? 2 : 4;
+  const decimals = getInstrumentDecimals(pair);
   const sortedLevels = [...levels].sort((a, b) => b.price - a.price);
 
   return (
     <div className="glass-card p-5 animate-fade-in-up" style={{ animationDelay: '0.3s' }}>
       <h3 className="section-title">Key Levels Summary</h3>
 
-      <div className="overflow-hidden rounded-lg border border-border">
+      <div className="overflow-x-auto rounded-lg border border-border">
         <table className="w-full">
           <thead>
             <tr className="bg-muted/50 border-b border-border">

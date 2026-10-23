@@ -25,7 +25,7 @@ interface TradeRecommendationProps {
 
 const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegram, isSendingTelegram }: { recommendation: TradeRecType; pair: TradingInstrument; showTradeButton?: boolean; onJournal?: () => void; isJournaling?: boolean; onSendTelegram?: () => void; isSendingTelegram?: boolean }) => {
   const { direction, confidence, setupType, preferPendingOrder, risk, tradeType, holdingPeriod, reasoning } = recommendation;
-  const decimals = pair === 'USD/JPY' ? 2 : 4;
+  const decimals = getInstrumentDecimals(pair);
   const isRanging = direction === 'ranging';
 
   const DirectionIcon = direction === 'bullish' ? TrendingUp : direction === 'bearish' ? TrendingDown : Minus;
@@ -195,6 +195,8 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
         <p className="text-sm text-muted-foreground">{reasoning}</p>
       </div>
 
+      {/* No trade: no levels to show (they would all equal the current price, R:R NaN). */}
+      {!isRanging && (<>
       {/* Entry & Exit Levels */}
       <div className="grid grid-cols-2 gap-3">
         <div className="p-3 rounded-lg bg-primary/10 border border-primary/30">
@@ -257,6 +259,7 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
           <span className="text-foreground">{risk.breakevenRule}</span>
         </div>
       </div>
+      </>)}
 
       {/* Action Buttons */}
       {!isRanging && (
