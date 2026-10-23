@@ -216,13 +216,16 @@ export const PriceChart = ({
         </div>
       </CardHeader>
       <CardContent>
-        {candles.length === 0 ? (
-          <div className="h-[400px] flex items-center justify-center text-muted-foreground">
-            Run analysis to load chart data
-          </div>
-        ) : (
-          <div ref={chartContainerRef} className="h-[400px] w-full" />
-        )}
+        {/* The chart container must exist from the first render: the chart is created once,
+            on mount, and swapping it in only after data arrived left the chart never drawn. */}
+        <div className="relative h-[400px] w-full">
+          <div ref={chartContainerRef} className="absolute inset-0" />
+          {candles.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center text-muted-foreground bg-card">
+              Run analysis to load chart data
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
   );
