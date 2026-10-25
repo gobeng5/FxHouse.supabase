@@ -214,7 +214,8 @@ async function downloadSeries(
         count: 1000,
         end,
         adjust_start_time: 1,
-        subscribe: 1,
+        // No subscribe: history needs no live stream, and Deriv refuses a stream
+        // (MarketIsClosed) for forex at weekends, which failed the Sunday research run.
       });
 
       if (
@@ -262,16 +263,6 @@ async function downloadSeries(
 
     output.unshift(...candles);
 
-    // Forget the live subscription before requesting the next historical page.
-    const subscriptionId =
-      response?.subscription?.id ??
-      response?.subscription?.subscription_id;
-
-    if (subscriptionId) {
-      await call({
-        forget: subscriptionId,
-      });
-    }
     const firstEpoch =
       candles[0].epoch;
 
