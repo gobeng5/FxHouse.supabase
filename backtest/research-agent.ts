@@ -36,7 +36,7 @@ const LUCK_MAX = 0.01;
 const NO_INCUMBENT_MAX_DD = 15;
 
 type Run = (instrument: string, s: Series) => Trade[];
-interface Config { family: string; params: Record<string, number | string>; run: Run; forexOnly?: boolean }
+export interface Config { family: string; params: Record<string, number | string>; run: Run; forexOnly?: boolean }
 
 // ---- Donchian body breakout, generalised (the live V10 rule is h1 / 20 / 0.7 / 0.8 / 2.5) ----
 export function donchian(tf: 'h1' | 'h4', lookback: number, bodyMin: number, rangeMin: number, tpR: number): Run {
@@ -61,7 +61,7 @@ export function donchian(tf: 'h1' | 'h4', lookback: number, bodyMin: number, ran
   };
 }
 
-const CONFIGS: Config[] = [];
+export const CONFIGS: Config[] = [];
 for (const tf of ['h1', 'h4'] as const) for (const lookback of [20, 40]) for (const bodyMin of [0.6, 0.7]) for (const rangeMin of [0.8, 1.2]) for (const tpR of [2, 2.5, 3]) {
   CONFIGS.push({ family: 'Donchian body breakout', params: { tf, lookback, bodyMin, rangeMinAtr: rangeMin, tpR, slAtr: 1.5 }, run: donchian(tf, lookback, bodyMin, rangeMin, tpR) });
 }
@@ -84,18 +84,18 @@ const INCUMBENT: Record<string, { name: string; run: Run } | null> = {
   V25: null, V50: null, V100: null,
 };
 
-interface Scored { full: Stats; train: Stats; holdout: Stats }
-function score(trades: Trade[], split: number): Scored {
+export interface Scored { full: Stats; train: Stats; holdout: Stats }
+export function score(trades: Trade[], split: number): Scored {
   return { full: stats(trades), train: stats(trades.filter(t => t.entryEpoch < split)), holdout: stats(trades.filter(t => t.entryEpoch >= split)) };
 }
 
-function annualVol(s: Series): number {
+export function annualVol(s: Series): number {
   const c = s.h1.map(x => x.close), r = c.slice(1).map((v, k) => Math.log(v / c[k]));
   const m = r.reduce((a, b) => a + b, 0) / r.length;
   return Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / (r.length - 1)) * Math.sqrt(24 * 365);
 }
 
-const compact = (x: Stats) => ({ n: x.n, winRate: +x.winRate.toFixed(1), avgR: +x.avgR.toFixed(3), totalR: +x.totalR.toFixed(1), t: +x.t.toFixed(2), maxDrawdownR: +x.maxDrawdownR.toFixed(1), profitFactor: +x.profitFactor.toFixed(2) });
+export const compact = (x: Stats) => ({ n: x.n, winRate: +x.winRate.toFixed(1), avgR: +x.avgR.toFixed(3), totalR: +x.totalR.toFixed(1), t: +x.t.toFixed(2), maxDrawdownR: +x.maxDrawdownR.toFixed(1), profitFactor: +x.profitFactor.toFixed(2) });
 const compactScore = (sc: Scored) => ({ full: compact(sc.full), train: compact(sc.train), holdout: compact(sc.holdout) });
 
 async function main() {

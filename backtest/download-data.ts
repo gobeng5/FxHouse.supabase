@@ -11,6 +11,9 @@
  *
  * Run with:
  *   bun run .\backtest\download-data.ts
+ *
+ * Other instruments / file (the live instruments are the default):
+ *   bun run .\backtest\download-data.ts .\backtest\data-candidates.json "US100,BTC/USD,XAG/USD,EUR/JPY,EUR/GBP,NZD/JPY"
  */
 
 const MAP: Record<string, string> = {
@@ -27,6 +30,26 @@ const MAP: Record<string, string> = {
   'V100': 'R_100',
   'BOOM1000': 'BOOM1000',
 };
+
+/** Candidate instruments for research; downloaded only when named on the command line. */
+const CANDIDATES: Record<string, string> = {
+  'US100': 'OTC_NDX',
+  'BTC/USD': 'cryBTCUSD',
+  'XAG/USD': 'frxXAGUSD',
+  'EUR/JPY': 'frxEURJPY',
+  'EUR/GBP': 'frxEURGBP',
+  'NZD/JPY': 'frxNZDJPY',
+};
+
+const ARG_OUTPUT = process.argv[2];
+const ARG_INSTRUMENTS = process.argv[3]?.split(',').map(s => s.trim()).filter(Boolean);
+const SELECTED: Record<string, string> = ARG_INSTRUMENTS
+  ? Object.fromEntries(ARG_INSTRUMENTS.map(i => {
+      const symbol = MAP[i] ?? CANDIDATES[i];
+      if (!symbol) throw new Error(`Unknown instrument ${i}`);
+      return [i, symbol];
+    }))
+  : MAP;
 
 type Candle = {
   epoch: number;
@@ -53,7 +76,7 @@ const TIMEFRAMES: Timeframe[] = [
 const URL =
   'wss://api.derivws.com/trading/v1/options/ws/public';
 
-const OUTPUT = './backtest/data.json';
+const OUTPUT = ARG_OUTPUT ?? './backtest/data.json';
 
 // 12 months ≈ 365 days.
 // We deliberately use a fixed UTC window so the backtest is reproducible.
@@ -342,7 +365,7 @@ console.log(
 );
 
 for (const [instrument, symbol] of Object.entries(
-  MAP
+  SELECTED
 )) {
   console.log(
     `\n==========================================`

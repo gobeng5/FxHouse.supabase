@@ -59,6 +59,14 @@ export const SPREAD_TABLE: Record<string, SpreadSpec> = {
   'V75': { spread: 2.50, note: 'Deriv Volatility 75 — 2.50 points' },
   'V100': { spread: 1.20, note: 'Deriv Volatility 100 — 1.20 points' },
   'BOOM1000': { spread: 0.60, note: 'Deriv Boom 1000 — 0.60 points' },
+
+  // ---- Research candidates (conservative ESTIMATES — confirm in the MT5 symbol spec) --
+  'EUR/JPY': { spread: 0.020, note: 'estimate: 2.0 pips' },
+  'NZD/JPY': { spread: 0.030, note: 'estimate: 3.0 pips' },
+  'EUR/GBP': { spread: 0.00015, note: 'estimate: 1.5 pips' },
+  'XAG/USD': { spread: 0.035, note: 'estimate: $0.035' },
+  'US100': { spread: 2.5, note: 'estimate: 2.5 index points' },
+  'BTC/USD': { spread: 50, note: 'estimate: $50' },
 };
 
 /** Fallback when an instrument is not in the table (conservative, 1 pip FX). */
