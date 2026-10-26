@@ -24,6 +24,7 @@ export const GEM_SETUP_TYPES = {
   V10_DONCHIAN: 'gem_v10_donchian',
   V10_STAR: 'gem_v10_star',
   BOOM1000_DONCHIAN: 'gem_boom1000_donchian',
+  XAG_DONCHIAN: 'gem_xag_donchian',
 } as const;
 
 export interface GemParameter {
@@ -539,6 +540,58 @@ export function evaluateBoom1000Donchian(h4Candles: CandleData[], nowEpoch: numb
       { label: 'Signal candle', value: `H4 closed ${utc(closeEpoch)} UTC`, weight: 1, maxWeight: 1, contributing: true },
       { label: 'Breakout candle', value: `range ${(range / atr).toFixed(2)}x ATR, body ${Math.round((body / range) * 100)}%`, weight: 1, maxWeight: 1, contributing: true },
       { label: 'Breakout', value: `close beyond the 40-candle ${side} ${(dir === 1 ? hi : lo).toFixed(2)}`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Risk Geometry', value: 'SL 1.5x ATR, TP 4.5x ATR (3:1 R:R), out after 7 days', weight: 1, maxWeight: 1, contributing: true },
+    ],
+  };
+}
+
+/**
+ * SHADOW — Silver (XAG/USD) H4 Donchian body breakout. Forward-tested in shadow mode
+ * (signals to the admin only, marked "do not trade") before any user sees it.
+ * Setup: the last closed H4 candle has range >= 1.2 ATR(14, H4) and a body >= 60% of it,
+ *   and closes beyond the high (long, green) or low (short, red) of the 20 candles before it.
+ * Signal: on the first hourly run after it closes, a market order at its close.
+ * Risk: SL 1.5 ATR, TP 3R (4.5 ATR); out after 168h.
+ * Backtest (candidate-instruments-study.ts, year to 2026-10-23): 53 trades, 45% wins,
+ *   +0.59R/trade, max drawdown 4R, luck 0.5% — but fading: thirds +1.34 / +0.24 / +0.06.
+ */
+export function evaluateXagDonchian(h4Candles: CandleData[], nowEpoch: number): SelectiveGemSetup | null {
+  const h4 = closedOnly(h4Candles, H4_SECONDS, nowEpoch);
+  if (h4.length < 53) return null;
+  const i = h4.length - 1;
+  const c = h4[i];
+  const closeEpoch = c.epoch + H4_SECONDS;
+  if (closeEpoch <= nowEpoch - H1_SECONDS) return null;
+
+  const atr = calculateATR(h4, 14);
+  if (atr <= 0) return null;
+  const range = c.high - c.low, body = Math.abs(c.close - c.open);
+  if (range < 1.2 * atr || body / range < 0.6) return null;
+  let hi = -Infinity, lo = Infinity;
+  for (let k = 1; k <= 20; k++) { hi = Math.max(hi, h4[i - k].high); lo = Math.min(lo, h4[i - k].low); }
+  const dir: 1 | -1 | 0 = c.close > hi && c.close > c.open ? 1 : c.close < lo && c.close < c.open ? -1 : 0;
+  if (!dir) return null;
+
+  const round3 = (v: number) => Math.round(v * 1000) / 1000;
+  const entry = c.close;
+  const utc = (e: number) => new Date(e * 1000).toISOString().slice(5, 16).replace('T', ' ');
+  const side = dir === 1 ? 'high' : 'low';
+  return {
+    instrument: 'XAG/USD' as TradingInstrument,
+    direction: dir === 1 ? 'bullish' : 'bearish',
+    entry,
+    stopLoss: round3(entry - dir * 1.5 * atr),
+    takeProfit: round3(entry + dir * 4.5 * atr),
+    atr,
+    confidence: 65,
+    setupType: GEM_SETUP_TYPES.XAG_DONCHIAN,
+    tradeType: 'swing',
+    triggerCloseEpoch: closeEpoch,
+    reason: `SHADOW TEST — Silver Donchian Breakout: the H4 candle closed at ${utc(closeEpoch)} UTC with a ${Math.round((body / range) * 100)}% body beyond the 20-candle ${side} ${(dir === 1 ? hi : lo).toFixed(3)}. Forward test only; do not trade.`,
+    parameters: [
+      { label: 'Signal candle', value: `H4 closed ${utc(closeEpoch)} UTC`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Breakout candle', value: `range ${(range / atr).toFixed(2)}x ATR, body ${Math.round((body / range) * 100)}%`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Breakout', value: `close beyond the 20-candle ${side} ${(dir === 1 ? hi : lo).toFixed(3)}`, weight: 1, maxWeight: 1, contributing: true },
       { label: 'Risk Geometry', value: 'SL 1.5x ATR, TP 4.5x ATR (3:1 R:R), out after 7 days', weight: 1, maxWeight: 1, contributing: true },
     ],
   };

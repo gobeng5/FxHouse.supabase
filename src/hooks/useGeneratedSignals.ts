@@ -139,6 +139,8 @@ export const useGeneratedSignals = () => {
         .from('generated_signals')
         .select('*')
         .eq('user_id', user.id)
+        // Shadow (forward-test) signals are for the admin's research, not the user's book.
+        .eq('shadow', false)
         .order('generated_at', { ascending: false })
         .limit(500);
 

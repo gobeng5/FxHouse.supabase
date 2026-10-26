@@ -4,7 +4,7 @@ import { computeSwingConfidence } from '../_shared/analysis/swingConfidence.ts';
 import type { TradingInstrument, TrendDirection } from '../_shared/analysis/core.ts';
 import { findOrderBlocks as findOrderBlocksShared, findFairValueGaps as findFairValueGapsShared, analyzeAsianSession } from '../_shared/analysis/smcAnalysis.ts';
 import type { OrderBlock, FairValueGap } from '../_shared/analysis/smcAnalysis.ts';
-import { entryNeedsFill, evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../_shared/analysis/smcChochFvg.ts';
+import { entryNeedsFill, evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE, SMC_US100_SETUP_TYPE } from '../_shared/analysis/smcChochFvg.ts';
 import { maxHoldHours } from '../_shared/analysis/holdLimits.ts';
 import { formatLotSuggestion, suggestLots } from '../_shared/analysis/positionSize.ts';
 import { alertHeader, strategyLabel, strategyName } from '../_shared/analysis/strategyNames.ts';
@@ -13,6 +13,7 @@ import {
   evaluateV75InsideBar,
   evaluateV10StarReversal,
   evaluateBoom1000Donchian,
+  evaluateXagDonchian,
   GEM_SETUP_TYPES,
   type SelectiveGemSetup,
 } from '../_shared/analysis/selectiveGems.ts';
@@ -91,6 +92,8 @@ const DERIV_SYMBOL_MAP: Record<string, string> = {
   'EUR/USD': 'frxEURUSD', 'GBP/USD': 'frxGBPUSD', 'USD/JPY': 'frxUSDJPY',
   'AUD/USD': 'frxAUDUSD', 'GBP/JPY': 'frxGBPJPY', 'XAU/USD': 'frxXAUUSD',
   'V10': 'R_10', 'V25': 'R_25', 'V50': 'R_50', 'V75': 'R_75', 'V100': 'R_100', 'BOOM1000': 'BOOM1000',
+  // Shadow (forward-test) instruments.
+  'XAG/USD': 'frxXAGUSD', 'US100': 'OTC_NDX',
 };
 
 const SYNTHETIC_INDICES = ['V10', 'V25', 'V50', 'V75', 'V100', 'BOOM1000'];
@@ -173,7 +176,7 @@ async function sendTelegramSignalAlert(
   // Suggested lot size from the user's saved balance and risk %; GBP/JPY needs a live USD/JPY rate.
   const balance = Number(settings.account_balance);
   let lotLine = '';
-  if (balance > 0) {
+  if (balance > 0 && !saved.shadow) {
     const usdJpy = saved.instrument === 'GBP/JPY' ? await getCurrentPrice('frxUSDJPY').catch(() => null) : null;
     const lots = suggestLots({
       instrument: saved.instrument, entry: Number(saved.entry_price), stopLoss: Number(saved.stop_loss),
@@ -183,6 +186,7 @@ async function sendTelegramSignalAlert(
   }
 
   const message = [
+    ...(saved.shadow ? ['🧪 *SHADOW TEST — do not trade*'] : []),
     `📊 *${alertHeader(saved.trade_type)}*`,
     ``,
     `🏷 *${saved.instrument}* — ${direction}`,
@@ -319,7 +323,7 @@ async function sendCloseAlert(supabase: ReturnType<typeof createClient>, id: str
   }
 
   const isTime = String(row.notes ?? '').startsWith('Time exit');
-  const header = row.outcome === 'won' ? '✅ *Trade closed — WIN*' : row.outcome === 'lost' ? '❌ *Trade closed — LOSS*' : '➖ *Trade closed — BREAKEVEN*';
+  const header = `${row.shadow ? '🧪 SHADOW · ' : ''}${row.outcome === 'won' ? '✅ *Trade closed — WIN*' : row.outcome === 'lost' ? '❌ *Trade closed — LOSS*' : '➖ *Trade closed — BREAKEVEN*'}`;
   const reason = isTime
     ? `⏱ Time exit: still open after the ${maxHoldHours(row.setup_type, row.trade_type)}h hold limit, closed at market`
     : row.outcome === 'won' ? '🎯 Target hit' : row.outcome === 'lost' ? '🛑 Stop loss hit' : '➖ Closed at entry';
@@ -834,6 +838,9 @@ const SPREAD_TABLE: Record<string, number> = {
   'V75': 2.50,
   'V100': 1.20,
   'BOOM1000': 0.60,
+  // Shadow instruments — estimates until confirmed in MT5 (src/lib/spreadConfig.ts).
+  'XAG/USD': 0.035,
+  'US100': 2.5,
 };
 const DEFAULT_SPREAD = 0.0001;
 
@@ -983,6 +990,82 @@ function generateSmcSignal(
 /**
  * Selective Gems: rule-based validated strategies with positive forward expectancy.
  */
+// =================== SHADOW STRATEGIES ===================
+// Forward tests of candidate strategies before any user sees them. Admins only; the
+// signals are saved with shadow = true, alerted as "SHADOW TEST — do not trade", kept
+// out of the app's lists and stats, and skip the arbiter so they never block a real
+// signal. Outcomes resolve as usual; Yaw compares them with their backtests.
+const SHADOW_STRATEGIES: { instrument: string; evaluate: (h4: CandleData[], h1: CandleData[], now: number) => SignalOutput | null }[] = [
+  {
+    instrument: 'XAG/USD',
+    evaluate: (h4, h1, now) => { const g = evaluateXagDonchian(h4, now); return g ? generateSelectiveGemSignal(g, h1, now) : null; },
+  },
+  {
+    instrument: 'US100',
+    evaluate: (h4, h1, now) => { const smc = generateSmcSignal('US100', h4, h1, now); return smc ? { ...smc, setup_type: SMC_US100_SETUP_TYPE } : null; },
+  },
+];
+
+async function runShadowStrategies(supabase: ReturnType<typeof createClient>, settings: Record<string, any>, errors: string[]) {
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  for (const sh of SHADOW_STRATEGIES) {
+    try {
+      const symbol = DERIV_SYMBOL_MAP[sh.instrument];
+      const [fourHour, oneHour] = await Promise.all([fetchCandles(symbol, 14400, 250), fetchCandles(symbol, 3600, 200)]);
+      const signal = sh.evaluate(fourHour, oneHour, nowEpoch);
+      if (!signal) continue;
+
+      // Once per trigger candle, and one open shadow trade per instrument.
+      const since = new Date((signal.trigger_close_epoch ?? nowEpoch - 3600) * 1000).toISOString();
+      const { data: existing, error: dupErr } = await supabase
+        .from('generated_signals')
+        .select('id')
+        .eq('user_id', settings.user_id)
+        .eq('instrument', sh.instrument)
+        .eq('shadow', true)
+        .or(`outcome.eq.pending,generated_at.gte.${since}`)
+        .limit(1);
+      if (dupErr) { errors.push(`${sh.instrument} (shadow): duplicate check failed - ${dupErr.message}`); continue; }
+      if (existing?.length) continue;
+
+      const { data: saved, error: saveErr } = await supabase
+        .from('generated_signals')
+        .insert({
+          user_id: settings.user_id,
+          instrument: signal.instrument,
+          direction: signal.direction,
+          trade_type: signal.trade_type,
+          confidence: signal.confidence,
+          setup_type: signal.setup_type,
+          entry_price: signal.entry_price,
+          effective_entry: signal.effective_entry,
+          spread_applied: signal.spread_applied,
+          atr_percentile_at_entry: signal.atr_percentile_at_entry,
+          spread_multiplier_applied: signal.spread_multiplier_applied,
+          stop_loss: signal.stop_loss,
+          take_profit_1: signal.take_profit_1,
+          take_profit_2: signal.take_profit_2,
+          take_profit_3: signal.take_profit_3,
+          risk_reward_ratio: signal.risk_reward_ratio,
+          reasoning: signal.reasoning,
+          confluence_breakdown: signal.confluence_breakdown,
+          confluence_score_total: signal.confluence_score_total,
+          confluence_score_max: signal.confluence_score_max,
+          outcome: 'pending',
+          engine_generated: true,
+          shadow: true,
+          session: new Date().getUTCHours() < 7 ? 'Asian' : new Date().getUTCHours() < 12 ? 'London' : new Date().getUTCHours() < 17 ? 'London/NY' : 'New York',
+        })
+        .select()
+        .single();
+      if (saveErr) { errors.push(`${sh.instrument} (shadow): Save failed - ${saveErr.message}`); continue; }
+      await sendTelegramSignalAlert(supabase, settings, saved);
+    } catch (err) {
+      errors.push(`${sh.instrument} (shadow): ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  }
+}
+
 function generateSelectiveGemSignal(
   gemSetup: SelectiveGemSetup,
   oneHourCandles: CandleData[],
@@ -2170,6 +2253,8 @@ Deno.serve(async (req) => {
           errors.push(`${instrument}: ${err instanceof Error ? err.message : 'Unknown error'}`);
         }
       }
+
+      if (settings.is_admin) await runShadowStrategies(supabase, settings, errors);
     }
     
     const outcomeResult = await checkOutcomes(supabase);

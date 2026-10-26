@@ -30,6 +30,7 @@ export const usePerformanceMetrics = () => {
         .from('generated_signals')
         .select('*')
         .eq('user_id', user.id)
+        .eq('shadow', false)
         .order('generated_at', { ascending: false })
         .limit(1000);
 

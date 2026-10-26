@@ -270,9 +270,11 @@ export function evaluateSmcChochFvg(
 const MARKET_ENTRY_TYPES: readonly string[] = [
   GEM_SETUP_TYPES.EURUSD_ZSCORE, GEM_SETUP_TYPES.V10_DONCHIAN,
   GEM_SETUP_TYPES.GBPJPY_MOMENTUM, GEM_SETUP_TYPES.BOOM1000_MOMENTUM,
-  GEM_SETUP_TYPES.V10_STAR, GEM_SETUP_TYPES.BOOM1000_DONCHIAN,
+  GEM_SETUP_TYPES.V10_STAR, GEM_SETUP_TYPES.BOOM1000_DONCHIAN, GEM_SETUP_TYPES.XAG_DONCHIAN,
 ];
-const HOUR_START_TYPES: readonly string[] = [SMC_SETUP_TYPE, GEM_SETUP_TYPES.V75_INSIDEBAR, ...MARKET_ENTRY_TYPES];
+/** US100 runs the SMC rule in shadow mode under its own setup type, so its results stay separate. */
+export const SMC_US100_SETUP_TYPE = 'smc_choch_fvg_us100';
+const HOUR_START_TYPES: readonly string[] = [SMC_SETUP_TYPE, SMC_US100_SETUP_TYPE, GEM_SETUP_TYPES.V75_INSIDEBAR, ...MARKET_ENTRY_TYPES];
 export const resolutionStartEpoch = (setupType: string | null | undefined, generatedAtEpoch: number): number =>
   setupType && HOUR_START_TYPES.includes(setupType) ? Math.floor(generatedAtEpoch / H1_SECONDS) * H1_SECONDS : generatedAtEpoch;
 

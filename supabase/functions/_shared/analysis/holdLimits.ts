@@ -16,6 +16,8 @@ const HOLD_HOURS_BY_SETUP: Record<string, number> = {
   gem_v10_donchian: 72,       // backtest/synthetic-pick-study.ts
   gem_v10_star: 168,          // backtest/research-agent.ts (H4 rules, 7 days)
   gem_boom1000_donchian: 168, // backtest/research-agent.ts (H4 rules, 7 days)
+  gem_xag_donchian: 168,      // shadow; backtest/candidate-instruments-study.ts
+  smc_choch_fvg_us100: 72,    // shadow; the SMC rule unchanged
   gem_eurusd_zscore: 120,     // backtest/forwardtest-2.1.ts, swing
   gem_gbpjpy_momentum: 120,   // backtest/forwardtest-2.1.ts, swing
   gem_boom1000_momentum: 48,  // backtest/forwardtest-2.1.ts, day

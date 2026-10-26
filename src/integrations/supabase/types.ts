@@ -115,6 +115,7 @@ export type Database = {
           resolution_method: string | null
           risk_reward_ratio: number | null
           session: string | null
+          shadow: boolean
           setup_type: string | null
           spread_applied: number | null
           spread_multiplier_applied: number | null
@@ -151,6 +152,7 @@ export type Database = {
           resolution_method?: string | null
           risk_reward_ratio?: number | null
           session?: string | null
+          shadow?: boolean
           setup_type?: string | null
           spread_applied?: number | null
           spread_multiplier_applied?: number | null
@@ -187,6 +189,7 @@ export type Database = {
           resolution_method?: string | null
           risk_reward_ratio?: number | null
           session?: string | null
+          shadow?: boolean
           setup_type?: string | null
           spread_applied?: number | null
           spread_multiplier_applied?: number | null
