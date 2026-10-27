@@ -2,7 +2,7 @@
  * Which setups the live rules produce for an instrument at a moment — the same
  * decision the signal engine makes each hour, without saving or sending anything.
  *
- *   Forex and gold: SMC CHoCH + FVG; if none, EUR/USD also checks its Z-score gem.
+ *   Forex and gold: SMC CHoCH + FVG; if none, EUR/USD and USD/JPY check their Z-score gems.
  *   V10: H4 star reversal gem.  V75: inside-bar breakout gem.  BOOM1000: H4 Donchian gem.
  *   Every other instrument issues no signals.
  *
@@ -15,7 +15,7 @@
 
 import type { CandleData, TradingInstrument } from './core.ts';
 import { evaluateSmcChochFvg, SMC_SETUP_TYPE } from './smcChochFvg.ts';
-import { evaluateBoom1000Donchian, evaluateEurUsdZScore, evaluateV10StarReversal, evaluateV75InsideBar } from './selectiveGems.ts';
+import { evaluateBoom1000Donchian, evaluateEurUsdZScore, evaluateUsdJpyZScore, evaluateV10StarReversal, evaluateV75InsideBar } from './selectiveGems.ts';
 
 export const LIVE_FOREX = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'GBP/JPY', 'XAU/USD'] as const;
 export const LIVE_SYNTHETICS = ['V10', 'V75', 'BOOM1000'] as const;
@@ -30,6 +30,10 @@ export function evaluateLiveSetups(instrument: string, c: LiveCandles, nowEpoch:
     if (setup) return { setupType: SMC_SETUP_TYPE, direction: setup.direction };
     if (instrument === 'EUR/USD') {
       const gem = evaluateEurUsdZScore(c.d1, c.h1, nowEpoch);
+      if (gem) return { setupType: gem.setupType, direction: gem.direction };
+    }
+    if (instrument === 'USD/JPY') {
+      const gem = evaluateUsdJpyZScore(c.h1, c.h4, nowEpoch);
       if (gem) return { setupType: gem.setupType, direction: gem.direction };
     }
     return null;

@@ -65,6 +65,7 @@ import type { AnalysisResult } from '../../supabase/functions/_shared/analysis/m
 import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
 import {
   evaluateEurUsdZScore,
+  evaluateUsdJpyZScore,
   evaluateV75InsideBar,
   evaluateV10StarReversal,
   evaluateBoom1000Donchian,
@@ -659,6 +660,8 @@ const applySmcStrategy = (
     };
   } else if (instrument === 'EUR/USD') {
     gemSetup = evaluateEurUsdZScore(dailyCandles, oneHourCandles, nowEpoch);
+  } else if (instrument === 'USD/JPY') {
+    gemSetup = evaluateUsdJpyZScore(oneHourCandles, fourHourCandles, nowEpoch);
   }
 
   if (!setup && gemSetup) {

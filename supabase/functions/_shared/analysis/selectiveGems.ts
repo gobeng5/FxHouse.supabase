@@ -25,6 +25,7 @@ export const GEM_SETUP_TYPES = {
   V10_STAR: 'gem_v10_star',
   BOOM1000_DONCHIAN: 'gem_boom1000_donchian',
   XAG_DONCHIAN: 'gem_xag_donchian',
+  USDJPY_ZSCORE: 'gem_usdjpy_zscore',
 } as const;
 
 export interface GemParameter {
@@ -593,6 +594,64 @@ export function evaluateXagDonchian(h4Candles: CandleData[], nowEpoch: number): 
       { label: 'Breakout candle', value: `range ${(range / atr).toFixed(2)}x ATR, body ${Math.round((body / range) * 100)}%`, weight: 1, maxWeight: 1, contributing: true },
       { label: 'Breakout', value: `close beyond the 20-candle ${side} ${(dir === 1 ? hi : lo).toFixed(3)}`, weight: 1, maxWeight: 1, contributing: true },
       { label: 'Risk Geometry', value: 'SL 1.5x ATR, TP 4.5x ATR (3:1 R:R), out after 7 days', weight: 1, maxWeight: 1, contributing: true },
+    ],
+  };
+}
+
+/**
+ * Gem 8: USD/JPY Swing (H1 Z-score reversion with the H4 trend) — fallback when SMC
+ * finds no USD/JPY setup, as the EUR/USD gem is for EUR/USD.
+ * Setup: on the last closed H1 candle, the 20-bar Z-score is below -2.5 (long) or above
+ *   +2.5 (short), RSI(14) is under 35 / over 65, and the last closed H4 candle is above /
+ *   below its EMA50 (buy dips in an H4 uptrend, sell rallies in a downtrend).
+ * Signal: on the first hourly run after that H1 candle closes, a market order at its close.
+ * Risk: SL 1.0 ATR(14, H1), TP 1.0 ATR; out after 72h.
+ * Backtest (zscore-per-pair-design.ts, year to 2026-10-07): 62 trades, 61% wins,
+ *   +0.19R/trade, max drawdown 10.8R — but only +0.05R/trade over the six months it was
+ *   not chosen on (forex-walk-forward.ts), swinging -0.54 / +0.16 / +0.73 by period.
+ */
+export function evaluateUsdJpyZScore(h1Candles: CandleData[], h4Candles: CandleData[], nowEpoch: number): SelectiveGemSetup | null {
+  const h1 = closedOnly(h1Candles, H1_SECONDS, nowEpoch);
+  const h4 = closedOnly(h4Candles, H4_SECONDS, nowEpoch);
+  if (h1.length < 50 || h4.length < 60) return null;
+  const c = h1[h1.length - 1];
+  const closeEpoch = c.epoch + H1_SECONDS;
+  if (closeEpoch <= nowEpoch - H1_SECONDS) return null;
+
+  const closes = h1.map(x => x.close);
+  const z = calculateZScore(closes, 20);
+  if (z === null) return null;
+  const rsi = calculateRSI(closes, 14);
+  const e50 = calculateEMA(h4.map(x => x.close), 50);
+  if (!e50.length) return null;
+  const h4Close = h4[h4.length - 1].close, h4Ema = e50[e50.length - 1];
+  const trend = h4Close > h4Ema ? 1 : h4Close < h4Ema ? -1 : 0;
+
+  const dir: 1 | -1 | 0 = z < -2.5 && rsi < 35 && trend === 1 ? 1 : z > 2.5 && rsi > 65 && trend === -1 ? -1 : 0;
+  if (!dir) return null;
+  const atr = calculateATR(h1, 14);
+  if (atr <= 0) return null;
+
+  const round3 = (v: number) => Math.round(v * 1000) / 1000;
+  const entry = c.close;
+  const utc = (e: number) => new Date(e * 1000).toISOString().slice(5, 16).replace('T', ' ');
+  return {
+    instrument: 'USD/JPY',
+    direction: dir === 1 ? 'bullish' : 'bearish',
+    entry,
+    stopLoss: round3(entry - dir * atr),
+    takeProfit: round3(entry + dir * atr),
+    atr,
+    confidence: 65,
+    setupType: GEM_SETUP_TYPES.USDJPY_ZSCORE,
+    tradeType: 'swing',
+    triggerCloseEpoch: closeEpoch,
+    reason: `USD/JPY Z-Score Reversion: the H1 candle closed at ${utc(closeEpoch)} UTC ${dir === 1 ? 'below' : 'above'} its 20-bar mean (Z=${z.toFixed(2)}, RSI ${rsi.toFixed(1)}) with the H4 trend ${dir === 1 ? 'up' : 'down'}. Market entry at its close. Backtest +0.19R/trade, but near zero on unseen months; not yet proven live.`,
+    parameters: [
+      { label: 'Stretch', value: `Z-score(20) = ${z.toFixed(2)}`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'RSI', value: `RSI(14) = ${rsi.toFixed(1)}`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'H4 trend', value: `H4 close ${dir === 1 ? 'above' : 'below'} EMA(50)`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Risk Geometry', value: 'SL 1.0x ATR, TP 1.0x ATR (1:1), out after 72h', weight: 1, maxWeight: 1, contributing: true },
     ],
   };
 }

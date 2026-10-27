@@ -54,6 +54,10 @@ export const BENCHMARKS: Record<string, Benchmark> = {
     label: 'SMC (6 pairs)', liveSince: '2026-10-11T13:00:00Z', avgR: 0.392, sdR: 1.509, winRate: 49.2, worstLosingStreak: 6, tradesPerYear: 59,
     byRegime: { quiet: { n: 14, avgR: 0.206 }, normal: { n: 35, avgR: 0.441 }, wild: { n: 10, avgR: 0.484 } },
   },
+  gem_usdjpy_zscore: {
+    label: 'USD/JPY Z-score', liveSince: '2026-10-27T12:00:00Z', avgR: 0.169, sdR: 0.988, winRate: 60, worstLosingStreak: 7, tradesPerYear: 60,
+    byRegime: { quiet: { n: 8, avgR: -0.296 }, normal: { n: 30, avgR: 0.3 }, wild: { n: 22, avgR: 0.159 } },
+  },
   gem_eurusd_zscore: {
     label: 'EUR/USD Z-score', liveSince: '2026-10-17T08:00:00Z', avgR: 0.126, sdR: 1.335, winRate: 45.7, worstLosingStreak: 3, tradesPerYear: 35,
     byRegime: { quiet: { n: 6, avgR: -0.209 }, normal: { n: 12, avgR: -0.447 }, wild: { n: 17, avgR: 0.649 } },
@@ -66,7 +70,7 @@ export const STRATEGIES_BY_INSTRUMENT: Record<string, string[]> = {
   V10: ['gem_v10_star'],
   BOOM1000: ['gem_boom1000_donchian'],
   'EUR/USD': ['smc_choch_fvg', 'gem_eurusd_zscore'],
-  'GBP/USD': ['smc_choch_fvg'], 'USD/JPY': ['smc_choch_fvg'], 'AUD/USD': ['smc_choch_fvg'],
+  'GBP/USD': ['smc_choch_fvg'], 'USD/JPY': ['smc_choch_fvg', 'gem_usdjpy_zscore'], 'AUD/USD': ['smc_choch_fvg'],
   'GBP/JPY': ['smc_choch_fvg'], 'XAU/USD': ['smc_choch_fvg'],
 };
 

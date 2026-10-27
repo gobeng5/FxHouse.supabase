@@ -14,6 +14,7 @@ import {
   evaluateV10StarReversal,
   evaluateBoom1000Donchian,
   evaluateXagDonchian,
+  evaluateUsdJpyZScore,
   GEM_SETUP_TYPES,
   type SelectiveGemSetup,
 } from '../_shared/analysis/selectiveGems.ts';
@@ -2088,7 +2089,8 @@ Deno.serve(async (req) => {
           if (isForex) {
             // Forex and gold: SMC CHoCH + FVG primary; if no setup, EUR/USD also checks its Z-score gem
             const fetches: Promise<CandleData[]>[] = [
-              fetchCandles(symbol, 14400, 100),
+              // USD/JPY's Z-score gem reads the H4 EMA50, which needs a longer H4 window.
+              fetchCandles(symbol, 14400, instrument === 'USD/JPY' ? 250 : 100),
               fetchCandles(symbol, 3600, 200),
             ];
             if (instrument === 'EUR/USD') {
@@ -2109,6 +2111,9 @@ Deno.serve(async (req) => {
               if (instrument === 'EUR/USD' && daily.length >= 200) {
                 const eurGem = evaluateEurUsdZScore(daily, oneHour, nowEpoch);
                 if (eurGem) gemSignal = generateSelectiveGemSignal(eurGem, oneHour, nowEpoch);
+              } else if (instrument === 'USD/JPY') {
+                const jpyGem = evaluateUsdJpyZScore(oneHour, fourHour, nowEpoch);
+                if (jpyGem) gemSignal = generateSelectiveGemSignal(jpyGem, oneHour, nowEpoch);
               }
             }
             candidates = [smc ?? gemSignal];

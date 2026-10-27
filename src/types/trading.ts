@@ -18,7 +18,8 @@ export type SetupType =
   | 'gem_v75_insidebar'
   | 'gem_v10_donchian'
   | 'gem_v10_star'
-  | 'gem_boom1000_donchian';
+  | 'gem_boom1000_donchian'
+  | 'gem_usdjpy_zscore';
 
 export type ConfidenceLevel = 'excellent' | 'good' | 'marginal' | 'no_trade';
 
