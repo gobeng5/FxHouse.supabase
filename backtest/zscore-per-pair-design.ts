@@ -30,14 +30,14 @@ const PAIRS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'GBP/JPY', 'XAU/USD']
 const LOOKBACKS = [20, 30, 50], THRESHOLDS = [1.5, 1.8, 2.2, 2.5], TARGETS = [1.0, 1.6, 2.0];
 const RSI_FILTER = [false, true], TRENDS = ['none', 'h4', 'd1'] as const;
 type Trend = typeof TRENDS[number];
-interface Version { lookback: number; threshold: number; rsi: boolean; trend: Trend; target: number }
+export interface Version { lookback: number; threshold: number; rsi: boolean; trend: Trend; target: number }
 
-const VERSIONS: Version[] = [];
+export const VERSIONS: Version[] = [];
 for (const lookback of LOOKBACKS) for (const threshold of THRESHOLDS) for (const rsi of RSI_FILTER) for (const trend of TRENDS) for (const target of TARGETS) {
   VERSIONS.push({ lookback, threshold, rsi, trend, target });
 }
 
-function prepare(s: Series) {
+export function prepare(s: Series) {
   const h1 = s.h1, closes = h1.map(c => c.close);
   const atr = atrSeries(h1), rsi = rsiSeries(closes, 14);
   const z: Record<number, number[]> = {};
@@ -66,7 +66,7 @@ function prepare(s: Series) {
   return { atr, rsi, z, trendOf };
 }
 
-function run(inst: string, s: Series, p: ReturnType<typeof prepare>, v: Version): Trade[] {
+export function run(inst: string, s: Series, p: ReturnType<typeof prepare>, v: Version): Trade[] {
   const h1 = s.h1, spread = getVolatilityAdjustedSpread(inst as never, null), out: Trade[] = [];
   let busyUntil = 0;
   for (let i = 60; i < h1.length - 1; i++) {
@@ -85,7 +85,7 @@ function run(inst: string, s: Series, p: ReturnType<typeof prepare>, v: Version)
   return out;
 }
 
-const label = (v: Version) => `L${v.lookback} z${v.threshold} rsi:${v.rsi ? 'on' : 'off'} trend:${v.trend} TP${v.target}ATR`;
+export const label = (v: Version) => `L${v.lookback} z${v.threshold} rsi:${v.rsi ? 'on' : 'off'} trend:${v.trend} TP${v.target}ATR`;
 
 function main() {
   const raw = loadData('./backtest/data.json');
