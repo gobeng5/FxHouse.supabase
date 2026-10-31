@@ -22,7 +22,7 @@ import { cleanSeries, firstIndexAtOrAfter, loadData } from './lib';
 import type { Candle, Series } from './lib';
 import { PRIMARY, setups as researchSetups } from './smc-choch-fvg';
 import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE, SMC_US100_SETUP_TYPE } from '../supabase/functions/_shared/analysis/smcChochFvg';
-import { evaluateXagDonchian } from '../supabase/functions/_shared/analysis/selectiveGems';
+import { evaluateGbpUsdZScore, evaluateXagDonchian } from '../supabase/functions/_shared/analysis/selectiveGems';
 import { generateTradePlan } from '../src/lib/tradeSignalGenerator';
 import type { TradingInstrument } from '../src/types/trading';
 
@@ -44,6 +44,7 @@ let existingSmcSignal = false;
 let inserts: any[] = [];
 let telegram: string[] = [];
 let arbitrations = 0;
+let admin = false;
 
 /** What Deriv would return at `nowEpoch`: the last `count` candles, including the one still forming. */
 const candlesAt = (instrument: string, granularity: number, count: number): Candle[] => {
@@ -64,14 +65,14 @@ function table(name: string) {
       return { data: [{
         user_id: USER, auto_engine_enabled: true, signals_paused: false, notify_instruments: [], notify_min_confidence: 70,
         max_daily_loss_percent: 5, max_trades_per_day: 50, forex_min_rr: 2, synthetic_min_rr: 1.5, ignore_counter_trend: true,
-        telegram_enabled: true, telegram_bot_token: 'test', telegram_chat_id: 'test',
+        telegram_enabled: true, telegram_bot_token: 'test', telegram_chat_id: 'test', is_admin: admin,
       }], error: null };
     }
     if (name === 'generated_signals' && filters.setup_type === SMC_SETUP_TYPE) return { data: existingSmcSignal ? [{ id: 'earlier' }] : [], error: null };
     return { data: [], error: null };
   };
   const q: any = {
-    select: () => q, gte: () => q, neq: () => q, order: () => q, limit: () => q, range: () => q,
+    select: () => q, gte: () => q, or: () => q, neq: () => q, order: () => q, limit: () => q, range: () => q,
     eq: (k: string, v: any) => { filters[k] = v; return q; },
     insert: (r: any) => { op = 'insert'; row = r; return q; },
     update: () => { op = 'update'; return q; },
@@ -211,6 +212,32 @@ for (const instrument of ['GBP/JPY', 'XAU/USD', 'EUR/USD'] as TradingInstrument[
 --- US100 Telegram alert as sent ---
 ${msg}
 `);
+}
+
+// GBP/USD z-score: shadow only (admins, "do not trade"), and only when SMC has no GBP/USD setup.
+{
+  const fires = series.get('GBP/USD')!.h1.map(c => c.epoch + 3600 + 5).filter(t => {
+    nowEpoch = t;
+    return evaluateGbpUsdZScore(candlesAt('GBP/USD', 3600, 200), t)
+      && !evaluateSmcChochFvg('GBP/USD', candlesAt('GBP/USD', 14400, 250), candlesAt('GBP/USD', 3600, 200), t).setup;
+  });
+  nowEpoch = fires[Math.floor(fires.length / 2)];
+  console.log(`\n===== GBP/USD z-score shadow at ${new Date(nowEpoch * 1000).toISOString()} =====`);
+  admin = false;
+  await runEngine();
+  check('non-admin: no GBP/USD z-score signal saved', !inserts.some(r => r.setup_type === 'gem_gbpusd_zscore'));
+  admin = true;
+  const body = await runEngine();
+  admin = false;
+  const rows = inserts.filter(r => r.setup_type === 'gem_gbpusd_zscore');
+  const gem = evaluateGbpUsdZScore(candlesAt('GBP/USD', 3600, 200), nowEpoch)!;
+  check('admin: one GBP/USD z-score signal saved, marked shadow', rows.length === 1 && rows[0].shadow === true, `saved ${rows.length}; errors ${JSON.stringify(body.errors ?? [])}`);
+  check('levels equal the shared gem', rows[0]?.entry_price === gem.entry && rows[0]?.stop_loss === gem.stopLoss && rows[0]?.take_profit_2 === gem.takeProfit);
+  const msg = telegram.find(m => m.includes('GBP/USD') && m.includes('Z-Score')) ?? '';
+  check('alert marked SHADOW TEST — do not trade', msg.includes('SHADOW TEST'));
+  const h4 = candlesAt('GBP/USD', 14400, 300);
+  const plan = generateTradePlan('GBP/USD', candlesAt('GBP/USD', 86400, 200), h4, candlesAt('GBP/USD', 3600, 200), h4[h4.length - 2].close, null, nowEpoch);
+  check('web app shows no GBP/USD z-score setup', plan.recommendation.setupType !== 'gem_gbpusd_zscore');
 }
 
 // Synthetics still go through the existing engine path.

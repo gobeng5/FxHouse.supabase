@@ -54,6 +54,11 @@ export const BENCHMARKS: Record<string, Benchmark> = {
     label: 'SMC (6 pairs)', liveSince: '2026-10-11T13:00:00Z', avgR: 0.392, sdR: 1.509, winRate: 49.2, worstLosingStreak: 6, tradesPerYear: 59,
     byRegime: { quiet: { n: 14, avgR: 0.206 }, normal: { n: 35, avgR: 0.441 }, wild: { n: 10, avgR: 0.484 } },
   },
+  // Shadow: forward test only, signals to the admin marked "do not trade".
+  gem_gbpusd_zscore: {
+    label: 'GBP/USD Z-score (shadow)', liveSince: '2026-10-31T00:00:00Z', avgR: 0.081, sdR: 1.03, winRate: 54.9, worstLosingStreak: 4, tradesPerYear: 71,
+    byRegime: { quiet: { n: 19, avgR: -0.055 }, normal: { n: 38, avgR: 0.008 }, wild: { n: 14, avgR: 0.463 } },
+  },
   gem_usdjpy_zscore: {
     label: 'USD/JPY Z-score', liveSince: '2026-10-27T12:00:00Z', avgR: 0.169, sdR: 0.988, winRate: 60, worstLosingStreak: 7, tradesPerYear: 60,
     byRegime: { quiet: { n: 8, avgR: -0.296 }, normal: { n: 30, avgR: 0.3 }, wild: { n: 22, avgR: 0.159 } },

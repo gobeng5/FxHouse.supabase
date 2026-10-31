@@ -15,6 +15,7 @@ const NAMES: Record<string, string> = {
   smc_choch_fvg_us100: 'US100 SMC CHoCH + FVG',
   gem_eurusd_zscore: 'EUR/USD Z-Score Reversion',
   gem_usdjpy_zscore: 'USD/JPY Z-Score Reversion',
+  gem_gbpusd_zscore: 'GBP/USD Z-Score Reversion (shadow)',
   gem_gbpjpy_momentum: 'GBP/JPY Momentum',
   gem_boom1000_momentum: 'BOOM1000 Momentum',
   trend_continuation: 'Trend Continuation',
@@ -33,6 +34,7 @@ const ORDER: Record<string, string> = {
   smc_choch_fvg_us100: 'limit order',
   gem_eurusd_zscore: 'market order',
   gem_usdjpy_zscore: 'market order',
+  gem_gbpusd_zscore: 'market order',
   gem_gbpjpy_momentum: 'market order',
   gem_boom1000_momentum: 'market order',
 };

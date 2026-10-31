@@ -15,6 +15,7 @@ import {
   evaluateBoom1000Donchian,
   evaluateXagDonchian,
   evaluateUsdJpyZScore,
+  evaluateGbpUsdZScore,
   GEM_SETUP_TYPES,
   type SelectiveGemSetup,
 } from '../_shared/analysis/selectiveGems.ts';
@@ -1002,7 +1003,17 @@ function generateSmcSignal(
 // out of the app's lists and stats, and skip the arbiter so they never block a real
 // signal. Outcomes resolve as usual; Yaw compares them with their backtests.
 // Silver Donchian and US100 SMC ran here from 2026-10-26 and went live on 2026-10-31.
-const SHADOW_STRATEGIES: { instrument: string; evaluate: (h4: CandleData[], h1: CandleData[], now: number) => SignalOutput | null }[] = [];
+const SHADOW_STRATEGIES: { instrument: string; evaluate: (h4: CandleData[], h1: CandleData[], now: number) => SignalOutput | null }[] = [
+  {
+    // The GBP/USD z-score gem as it would run live: only in hours when SMC has no GBP/USD setup.
+    instrument: 'GBP/USD',
+    evaluate: (h4, h1, now) => {
+      if (generateSmcSignal('GBP/USD', h4, h1, now)) return null;
+      const g = evaluateGbpUsdZScore(h1, now);
+      return g ? generateSelectiveGemSignal(g, h1, now) : null;
+    },
+  },
+];
 
 async function runShadowStrategies(supabase: ReturnType<typeof createClient>, settings: Record<string, any>, errors: string[]) {
   const nowEpoch = Math.floor(Date.now() / 1000);

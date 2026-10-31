@@ -26,6 +26,7 @@ export const GEM_SETUP_TYPES = {
   BOOM1000_DONCHIAN: 'gem_boom1000_donchian',
   XAG_DONCHIAN: 'gem_xag_donchian',
   USDJPY_ZSCORE: 'gem_usdjpy_zscore',
+  GBPUSD_ZSCORE: 'gem_gbpusd_zscore',
 } as const;
 
 export interface GemParameter {
@@ -652,6 +653,104 @@ export function evaluateUsdJpyZScore(h1Candles: CandleData[], h4Candles: CandleD
       { label: 'RSI', value: `RSI(14) = ${rsi.toFixed(1)}`, weight: 1, maxWeight: 1, contributing: true },
       { label: 'H4 trend', value: `H4 close ${dir === 1 ? 'above' : 'below'} EMA(50)`, weight: 1, maxWeight: 1, contributing: true },
       { label: 'Risk Geometry', value: 'SL 1.0x ATR, TP 1.0x ATR (1:1), out after 72h', weight: 1, maxWeight: 1, contributing: true },
+    ],
+  };
+}
+
+/** Wilder smoothing from the first value (pandas ewm(alpha=1/n, adjust=False)), as in the Python test. */
+function wilder(values: number[], n: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < values.length; i++) out.push(i === 0 ? values[0] : out[i - 1] + (values[i] - out[i - 1]) / n);
+  return out;
+}
+
+/**
+ * Gem 9 (SHADOW): GBP/USD Swing (H1 z-score mean reversion in a quiet range) — forward-
+ * tested in shadow mode as the fallback for hours when SMC finds no GBP/USD setup (admin
+ * only, "do not trade"). The FX playbook's AUD/USD z-score rules, target mean + 1 sd.
+ * Setup: on the last closed H1 candle the 20-bar z-score (population sd) closes back above
+ *   -2 after closing below it on the candle before (long), or back below +2 (short); ADX(14)
+ *   is under 20 and the 50 SMA is flat (moved less than 0.5 ATR(14) over 10 candles).
+ * Signal: on the first hourly run after that candle closes, a market order at its close.
+ * Risk: SL at the stretch extreme or 1.5 ATR, whichever is wider; TP at the 20-bar mean
+ *   + 1 sd past it (mean - 1 sd for shorts); out after 10h. The playbook's z-score and ADX
+ *   exits are not used (the outcome checker resolves SL / TP / time only).
+ * Backtest (backtest/py/fx_playbook.py, fx_zscore_holdout.py, year to 2026-10-07, these
+ *   exits): train +0.125R (45 trades), holdout +0.026R (26), thirds +0.07 / +0.02 / +0.16;
+ *   27% of coin-flip runs match the holdout, so the edge is not proven.
+ */
+export function evaluateGbpUsdZScore(h1Candles: CandleData[], nowEpoch: number): SelectiveGemSetup | null {
+  const h1 = closedOnly(h1Candles, H1_SECONDS, nowEpoch);
+  const n = h1.length;
+  if (n < 120) return null;
+  const i = n - 1;
+  const closeEpoch = h1[i].epoch + H1_SECONDS;
+  if (closeEpoch <= nowEpoch - H1_SECONDS) return null;
+
+  const close = h1.map(c => c.close);
+  const meanSd = (k: number): [number, number] => {
+    const w = close.slice(k - 19, k + 1);
+    const m = w.reduce((s, v) => s + v, 0) / 20;
+    return [m, Math.sqrt(w.reduce((s, v) => s + (v - m) ** 2, 0) / 20)];
+  };
+  const z = (k: number): number => {
+    if (k < 19) return NaN;
+    const [m, sd] = meanSd(k);
+    return sd > 0 ? (close[k] - m) / sd : NaN;
+  };
+  const z0 = z(i), z1 = z(i - 1);
+  const dir: 1 | -1 | 0 = z1 < -2 && z0 >= -2 ? 1 : z1 > 2 && z0 <= 2 ? -1 : 0;
+  if (!dir) return null;
+
+  const tr = h1.map((c, k) => k === 0 ? c.high - c.low
+    : Math.max(c.high - c.low, Math.abs(c.high - h1[k - 1].close), Math.abs(c.low - h1[k - 1].close)));
+  const atrS = wilder(tr, 14);
+  const atr = atrS[i];
+  const up = h1.map((c, k) => (k ? c.high - h1[k - 1].high : 0));
+  const dn = h1.map((c, k) => (k ? h1[k - 1].low - c.low : 0));
+  const pdmS = wilder(up.map((u, k) => (u > dn[k] && u > 0 ? u : 0)), 14);
+  const ndmS = wilder(dn.map((d, k) => (d > up[k] && d > 0 ? d : 0)), 14);
+  const dx = atrS.map((a, k) => {
+    const p = (100 * pdmS[k]) / a, m = (100 * ndmS[k]) / a;
+    return p + m > 0 ? (100 * Math.abs(p - m)) / (p + m) : 0;
+  });
+  const adx = wilder(dx, 14)[i];
+  const sma50 = (k: number) => close.slice(k - 49, k + 1).reduce((s, v) => s + v, 0) / 50;
+  const flat = Math.abs(sma50(i) - sma50(i - 10)) < 0.5 * atr;
+  if (!(adx < 20) || !flat || !(atr > 0)) return null;
+
+  // The stretch: the run of candles ending here where this or the previous z-score was past 2.
+  let ext = dir === 1 ? Infinity : -Infinity;
+  for (let k = i; k >= 1; k--) {
+    const inRun = dir === 1 ? z(k - 1) < -2 || z(k) < -2 : z(k - 1) > 2 || z(k) > 2;
+    if (!inRun) break;
+    ext = dir === 1 ? Math.min(ext, h1[k].low) : Math.max(ext, h1[k].high);
+  }
+  const [mean, sd] = meanSd(i);
+  const entry = close[i];
+  const stop = dir === 1 ? Math.min(ext, entry - 1.5 * atr) : Math.max(ext, entry + 1.5 * atr);
+  const target = mean + dir * sd;
+  if (dir * (target - entry) <= 0) return null;
+
+  const round5 = (v: number) => Math.round(v * 100000) / 100000;
+  const utc = (e: number) => new Date(e * 1000).toISOString().slice(5, 16).replace('T', ' ');
+  return {
+    instrument: 'GBP/USD',
+    direction: dir === 1 ? 'bullish' : 'bearish',
+    entry,
+    stopLoss: round5(stop),
+    takeProfit: round5(target),
+    atr,
+    confidence: 65,
+    setupType: GEM_SETUP_TYPES.GBPUSD_ZSCORE,
+    tradeType: 'swing',
+    triggerCloseEpoch: closeEpoch,
+    reason: `SHADOW TEST — GBP/USD Z-Score Reversion: the H1 candle closed at ${utc(closeEpoch)} UTC with the 20-bar Z-score back ${dir === 1 ? 'above -2' : 'below +2'} (${z1.toFixed(2)} to ${z0.toFixed(2)}) in a quiet range (ADX ${adx.toFixed(1)}). Market entry at its close; target 1 sd past the mean. Backtest holdout +0.03R/trade. Forward test only; do not trade.`,
+    parameters: [
+      { label: 'Stretch', value: `Z-score(20) ${z1.toFixed(2)} to ${z0.toFixed(2)}`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Quiet range', value: `ADX(14) ${adx.toFixed(1)} under 20, 50 SMA flat`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Stop', value: 'wider of the stretch extreme and 1.5x ATR', weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Risk Geometry', value: `TP at the 20-bar mean ${dir === 1 ? '+' : '-'} 1 sd, out after 10h`, weight: 1, maxWeight: 1, contributing: true },
     ],
   };
 }
