@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useUserSettings } from '@/hooks/useUserSettings';
 import { GeneratedSignal } from '@/hooks/useGeneratedSignals';
-import { TradeRecommendation as TradeRecType, TradingInstrument } from '@/types/trading';
+import { TradeRecommendation as TradeRecType, TradingInstrument, getInstrumentDecimals } from '@/types/trading';
 import { GEM_SETUP_TYPES } from '@/lib/selectiveGems';
 import { toast } from 'sonner';
 import { formatLotSuggestion, suggestLots } from '../../supabase/functions/_shared/analysis/positionSize.ts';
@@ -124,9 +124,9 @@ export const useTelegramAlert = () => {
   }, [settings, sendMessage]);
 
   const sendTradeRecommendation = useCallback(async (rec: TradeRecType, pair: TradingInstrument) => {
-    const decimals = pair.includes('JPY') || pair === 'XAU/USD' || pair.startsWith('V') || pair.startsWith('BOOM') ? 2 : 4;
+    const decimals = getInstrumentDecimals(pair);
     const direction = rec.direction === 'bullish' ? '🟢 LONG' : rec.direction === 'bearish' ? '🔴 SHORT' : '⚠️ RANGING';
-    const isSmc = rec.setupType === 'smc_choch_fvg';
+    const isSmc = rec.setupType === 'smc_choch_fvg' || rec.setupType === 'smc_choch_fvg_us100';
     const isGem = isGemSetupType(rec.setupType);
     const targetPrice = isSmc || isGem ? rec.risk.takeProfit1 : rec.risk.takeProfit2;
     const rr = rec.direction !== 'ranging' && targetPrice

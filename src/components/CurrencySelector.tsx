@@ -1,4 +1,4 @@
-import { TradingInstrument, FOREX_PAIRS, SYNTHETIC_INDICES, isSyntheticIndex, getInstrumentDecimals } from '@/types/trading';
+import { TradingInstrument, FOREX_PAIRS, ACTIVE_SYNTHETICS, isSyntheticIndex, getInstrumentDecimals } from '@/types/trading';
 import { INSTRUMENT_DISPLAY_NAMES } from '@/lib/deriv';
 import { cn } from '@/lib/utils';
 import { TrendingUp, TrendingDown, Minus, Zap } from 'lucide-react';
@@ -17,7 +17,7 @@ export const CurrencySelector = ({ selected, onChange, pairData }: InstrumentSel
     isSyntheticIndex(selected) ? 'synthetic' : 'forex'
   );
 
-  const instruments = activeTab === 'forex' ? FOREX_PAIRS : SYNTHETIC_INDICES;
+  const instruments = activeTab === 'forex' ? FOREX_PAIRS : ACTIVE_SYNTHETICS;
 
   return (
     <div className="space-y-4">

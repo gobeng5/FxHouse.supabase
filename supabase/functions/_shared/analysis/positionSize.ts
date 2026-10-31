@@ -34,6 +34,8 @@ export const CONTRACT_SPECS: Record<string, ContractSpec> = {
   'USD/JPY': FOREX_JPY,
   'GBP/JPY': FOREX_JPY,
   'XAU/USD': { contractSize: 100, quote: 'USD', minLot: 0.01, lotStep: 0.01 },
+  'XAG/USD': { contractSize: 5_000, quote: 'USD', minLot: 0.01, lotStep: 0.01 },
+  US100: { contractSize: 1, quote: 'USD', minLot: 0.1, lotStep: 0.1 },
   V10: { contractSize: 1, quote: 'USD', minLot: 0.5, lotStep: 0.01 },
   V75: { contractSize: 1, quote: 'USD', minLot: 0.001, lotStep: 0.001 },
 };

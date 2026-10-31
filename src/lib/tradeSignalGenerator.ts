@@ -62,10 +62,11 @@ export type { AnalysisResult } from '../../supabase/functions/_shared/analysis/m
 import { computeSwingConfidence, SWING_CONFIDENCE_MAX } from '../../supabase/functions/_shared/analysis/swingConfidence.ts';
 import { analyzeMarket } from '../../supabase/functions/_shared/analysis/marketAnalysis.ts';
 import type { AnalysisResult } from '../../supabase/functions/_shared/analysis/marketAnalysis.ts';
-import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
+import { evaluateSmcChochFvg, SMC_CONFIDENCE, smcSetupTypeFor } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
 import {
   evaluateEurUsdZScore,
   evaluateUsdJpyZScore,
+  evaluateXagDonchian,
   evaluateV75InsideBar,
   evaluateV10StarReversal,
   evaluateBoom1000Donchian,
@@ -584,10 +585,11 @@ const generateDayTradeRecommendation = (
 };
 
 /**
- * Forex and gold trade one strategy: SMC CHoCH + FVG, evaluated by the shared
- * module the signal engine also uses. This replaces the plan's swing and
- * day-trade recommendations (and the levels derived from them) for those
- * instruments; the surrounding market analysis is left as context.
+ * Forex, gold and US100 trade one strategy: SMC CHoCH + FVG, evaluated by the shared
+ * module the signal engine also uses (US100 under its own setup type). Silver trades
+ * only its H4 Donchian gem. This replaces the plan's swing and day-trade
+ * recommendations (and the levels derived from them) for those instruments; the
+ * surrounding market analysis is left as context.
  */
 const applySmcStrategy = (
   plan: TradePlan,
@@ -601,7 +603,11 @@ const applySmcStrategy = (
   const instrument = plan.pair;
   const { currentPrice } = plan;
   const decimals = getInstrumentDecimals(instrument);
-  const { setup, reason } = evaluateSmcChochFvg(instrument, fourHourCandles, oneHourCandles, nowEpoch);
+  // Silver has no SMC rule: it trades only its H4 Donchian gem.
+  const smc = instrument === 'XAG/USD'
+    ? { setup: null, reason: 'XAG/USD trades the H4 Donchian breakout: an H4 candle with a 60% body and a range of at least 1.2 ATR closing beyond the last 20 H4 candles.' }
+    : evaluateSmcChochFvg(instrument, fourHourCandles, oneHourCandles, nowEpoch);
+  const { setup, reason } = smc;
 
   const noTrade = (tradeType: 'swing' | 'day', reasoning: string): TradePlan['recommendation'] => ({
     direction: 'ranging',
@@ -633,7 +639,7 @@ const applySmcStrategy = (
     recommendation = {
       direction: setup.direction,
       confidence: SMC_CONFIDENCE,
-      setupType: SMC_SETUP_TYPE,
+      setupType: smcSetupTypeFor(instrument) as SetupType,
       preferPendingOrder: true,
       tradeType: 'swing',
       holdingPeriod: 'Hours to 3 days',
@@ -662,6 +668,8 @@ const applySmcStrategy = (
     gemSetup = evaluateEurUsdZScore(dailyCandles, oneHourCandles, nowEpoch);
   } else if (instrument === 'USD/JPY') {
     gemSetup = evaluateUsdJpyZScore(oneHourCandles, fourHourCandles, nowEpoch);
+  } else if (instrument === 'XAG/USD') {
+    gemSetup = evaluateXagDonchian(fourHourCandles, nowEpoch);
   }
 
   if (!setup && gemSetup) {
@@ -673,7 +681,7 @@ const applySmcStrategy = (
       setupType: gemSetup.setupType as any,
       preferPendingOrder: false,
       tradeType: 'swing',
-      holdingPeriod: '1-3 days',
+      holdingPeriod: instrument === 'XAG/USD' ? 'Up to 7 days' : '1-3 days',
       reasoning: gemSetup.reason,
       confidenceBreakdown: gemSetup.parameters as any,
       risk: {
@@ -727,7 +735,7 @@ const applySmcStrategy = (
   return {
     ...plan,
     recommendation,
-    dayTradeRecommendation: noTrade('day', 'Day-trade signals are retired for forex and gold. These instruments trade SMC CHoCH + FVG or selective swing momentum — see the main signal.'),
+    dayTradeRecommendation: noTrade('day', 'Day-trade signals are retired for forex, metals and US100. These instruments trade SMC CHoCH + FVG or a selective swing gem — see the main signal.'),
     keyLevels,
     executionPlan: {
       ...plan.executionPlan,
@@ -758,7 +766,7 @@ export const generateTradePlan = (
   fifteenMinCandles: CandleData[] = []
 ): TradePlan => {
   const syntheticProfile = getSyntheticProfile(instrument);
-  const pip = isSyntheticIndex(instrument) ? 0.01 : (instrument === 'USD/JPY' || instrument === 'GBP/JPY' ? 0.01 : instrument === 'XAU/USD' ? 0.01 : 0.0001);
+  const pip = isSyntheticIndex(instrument) ? 0.01 : (instrument === 'USD/JPY' || instrument === 'GBP/JPY' || instrument === 'XAU/USD' || instrument === 'XAG/USD' ? 0.01 : instrument === 'US100' ? 1 : 0.0001);
   
   // CRITICAL: Use only CLOSED candles (exclude the last/current incomplete candle)
   // This ensures deterministic results regardless of when analysis is run

@@ -2,7 +2,7 @@ export type {
   CurrencyPair, SyntheticIndex, TradingInstrument, TrendDirection, MarketPhase, PriceLevel,
 } from '../../supabase/functions/_shared/analysis/core.ts';
 export {
-  FOREX_PAIRS, SYNTHETIC_INDICES, ALL_INSTRUMENTS, isSyntheticIndex, getInstrumentDecimals,
+  FOREX_PAIRS, SYNTHETIC_INDICES, ACTIVE_SYNTHETICS, ALL_INSTRUMENTS, isSyntheticIndex, getInstrumentDecimals,
 } from '../../supabase/functions/_shared/analysis/core.ts';
 import type { TrendDirection, MarketPhase, PriceLevel, TradingInstrument } from '../../supabase/functions/_shared/analysis/core.ts';
 
@@ -19,7 +19,9 @@ export type SetupType =
   | 'gem_v10_donchian'
   | 'gem_v10_star'
   | 'gem_boom1000_donchian'
-  | 'gem_usdjpy_zscore';
+  | 'gem_usdjpy_zscore'
+  | 'gem_xag_donchian'
+  | 'smc_choch_fvg_us100';
 
 export type ConfidenceLevel = 'excellent' | 'good' | 'marginal' | 'no_trade';
 

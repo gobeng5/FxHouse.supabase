@@ -8,6 +8,8 @@ export const generateMockTradePlan = (instrument: TradingInstrument): TradePlan 
     'AUD/USD': { price: 0.6520, direction: 'bullish' },
     'GBP/JPY': { price: 189.45, direction: 'bearish' },
     'XAU/USD': { price: 2045.50, direction: 'bullish' },
+    'XAG/USD': { price: 48.25, direction: 'bullish' },
+    'US100': { price: 25900, direction: 'bullish' },
     'V10': { price: 8500, direction: 'ranging' },
     'V25': { price: 125000, direction: 'bullish' },
     'V50': { price: 250000, direction: 'bullish' },

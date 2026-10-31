@@ -193,7 +193,7 @@ export const runBacktest = (
   oneHourCandles: CandleData[]
 ): BacktestResult => {
   const trades: BacktestTrade[] = [];
-  const pipMultiplier = instrument.includes('JPY') || instrument === 'XAU/USD' ? 100 : 10000;
+  const pipMultiplier = instrument.includes('JPY') || instrument === 'XAU/USD' || instrument === 'XAG/USD' ? 100 : instrument === 'US100' ? 1 : 10000;
   
   if (fourHourCandles.length < 70) {
     return emptyResult(instrument);

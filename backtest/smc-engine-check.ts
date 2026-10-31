@@ -21,18 +21,21 @@ import { pathToFileURL } from 'node:url';
 import { cleanSeries, firstIndexAtOrAfter, loadData } from './lib';
 import type { Candle, Series } from './lib';
 import { PRIMARY, setups as researchSetups } from './smc-choch-fvg';
-import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE } from '../supabase/functions/_shared/analysis/smcChochFvg';
+import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE, SMC_US100_SETUP_TYPE } from '../supabase/functions/_shared/analysis/smcChochFvg';
+import { evaluateXagDonchian } from '../supabase/functions/_shared/analysis/selectiveGems';
 import { generateTradePlan } from '../src/lib/tradeSignalGenerator';
 import type { TradingInstrument } from '../src/types/trading';
 
 const SYMBOLS: Record<string, string> = {
   frxEURUSD: 'EUR/USD', frxGBPUSD: 'GBP/USD', frxUSDJPY: 'USD/JPY', frxAUDUSD: 'AUD/USD', frxGBPJPY: 'GBP/JPY', frxXAUUSD: 'XAU/USD',
   R_10: 'V10', R_25: 'V25', R_50: 'V50', R_75: 'V75', R_100: 'V100', BOOM1000: 'BOOM1000',
+  frxXAGUSD: 'XAG/USD', OTC_NDX: 'US100',
 };
 const TF: Record<number, keyof Series> = { 900: 'm15', 3600: 'h1', 14400: 'h4', 86400: 'd1' };
 const USER = '00000000-0000-0000-0000-000000000001';
 
-const data = loadData('./backtest/data.json');
+// Silver and US100 come from the candidate-instrument history.
+const data = { ...loadData('./backtest/data.json'), ...loadData('./backtest/data-candidates.json') };
 const series = new Map<string, Series>(Object.keys(data).map(k => [k, cleanSeries(data[k]).series]));
 
 // ---- stand-ins the engine copy talks to ----
@@ -164,11 +167,58 @@ for (const instrument of ['GBP/JPY', 'XAU/USD', 'EUR/USD'] as TradingInstrument[
   check('next hour: no signal unless a new trigger closed', (later.length === 1) === expectLater, `saved ${later.length}`);
 }
 
+// Silver and US100: live (not shadow) signals from the main path, matching the web app.
+{
+  const s = series.get('XAG/USD')!;
+  const closes = s.h4.map(c => c.epoch + 14400).filter(t => evaluateXagDonchian(s.h4.filter(c => c.epoch + 14400 <= t), t + 5));
+  nowEpoch = closes[Math.floor(closes.length / 2)] + 5;
+  console.log(`
+===== XAG/USD at ${new Date(nowEpoch * 1000).toISOString()} =====`);
+  const body = await runEngine();
+  const saved = inserts.filter(r => r.instrument === 'XAG/USD');
+  const gem = evaluateXagDonchian(candlesAt('XAG/USD', 14400, 250), nowEpoch)!;
+  check('engine saved one live silver Donchian signal', saved.length === 1 && saved[0].setup_type === 'gem_xag_donchian' && !saved[0].shadow, `saved ${saved.length}; errors ${JSON.stringify(body.errors ?? [])}`);
+  const row = saved[0] ?? {};
+  check('levels equal the shared gem', row.entry_price === gem.entry && row.stop_loss === gem.stopLoss && row.take_profit_2 === gem.takeProfit);
+  check('it went through the arbiter', arbitrations > 0);
+  const msg = telegram.find(m => m.includes('XAG/USD')) ?? '';
+  check('alert sent, not marked shadow', msg.length > 0 && !msg.includes('SHADOW'));
+  const h4 = candlesAt('XAG/USD', 14400, 300);
+  const plan = generateTradePlan('XAG/USD', candlesAt('XAG/USD', 86400, 200), h4, candlesAt('XAG/USD', 3600, 200), h4[h4.length - 2].close, null, nowEpoch);
+  check('web app recommendation equals the engine signal', plan.recommendation.setupType === 'gem_xag_donchian' && plan.recommendation.risk.entry === row.entry_price && plan.recommendation.risk.stopLoss === row.stop_loss,
+    `app: ${plan.recommendation.setupType} ${plan.recommendation.direction} entry ${plan.recommendation.risk.entry}`);
+}
+{
+  const s = series.get('US100')!;
+  const all = researchSetups(s, PRIMARY);
+  const pick = all[Math.floor(all.length / 2)];
+  nowEpoch = pick.trigClose + 5;
+  console.log(`
+===== US100 at ${new Date(nowEpoch * 1000).toISOString()} =====`);
+  const body = await runEngine();
+  const saved = inserts.filter(r => r.instrument === 'US100');
+  const mod = evaluateSmcChochFvg('US100', candlesAt('US100', 14400, 100), candlesAt('US100', 3600, 200), nowEpoch).setup!;
+  check('engine saved one live US100 SMC signal', saved.length === 1 && saved[0].setup_type === SMC_US100_SETUP_TYPE && !saved[0].shadow, `saved ${saved.length}; errors ${JSON.stringify(body.errors ?? [])}`);
+  const row = saved[0] ?? {};
+  check('levels equal the shared module', row.entry_price === mod.entry && row.stop_loss === mod.stopLoss && row.take_profit_2 === mod.takeProfit);
+  const msg = telegram.find(m => m.includes('US100')) ?? '';
+  check('alert sent although confidence is under the user threshold, not marked shadow', msg.length > 0 && !msg.includes('SHADOW'));
+  const h4 = candlesAt('US100', 14400, 300);
+  const plan = generateTradePlan('US100', candlesAt('US100', 86400, 200), h4, candlesAt('US100', 3600, 200), h4[h4.length - 2].close, null, nowEpoch);
+  check('web app recommendation equals the engine signal', plan.recommendation.setupType === SMC_US100_SETUP_TYPE && plan.recommendation.risk.entry === row.entry_price && plan.recommendation.risk.stopLoss === row.stop_loss,
+    `app: ${plan.recommendation.setupType} ${plan.recommendation.direction} entry ${plan.recommendation.risk.entry}`);
+  console.log(`
+--- US100 Telegram alert as sent ---
+${msg}
+`);
+}
+
 // Synthetics still go through the existing engine path.
 nowEpoch = researchSetups(series.get('GBP/JPY')!, PRIMARY)[3].trigClose + 5;
 existingSmcSignal = false;
 const body = await runEngine();
 const synth = inserts.filter(r => ['V10', 'V25', 'V50', 'V75', 'V100', 'BOOM1000'].includes(r.instrument));
+check('V50 and V100 are no longer scanned', !synth.some(r => r.instrument === 'V50' || r.instrument === 'V100'));
 console.log('\n===== Synthetics =====');
 check('synthetic path runs without errors', !(body.errors ?? []).length, JSON.stringify(body.errors ?? []));
 check('no synthetic signal uses the SMC strategy', synth.every(r => r.setup_type !== SMC_SETUP_TYPE), `${synth.length} synthetic signals saved this run`);

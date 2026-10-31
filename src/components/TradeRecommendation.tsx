@@ -69,7 +69,7 @@ const TradeCard = ({ recommendation, pair, onJournal, isJournaling, onSendTelegr
   // For ranging, show "NO TRADE" prominently
   const displayDirection = isRanging ? 'NO TRADE' : direction;
   // Rule-based strategies (SMC or v2.1 selective gems) have fixed targets and checklists
-  const isSmc = setupType === 'smc_choch_fvg' || setupType.startsWith('gem_');
+  const isSmc = setupType === 'smc_choch_fvg' || setupType === 'smc_choch_fvg_us100' || setupType.startsWith('gem_');
   // Same names as the Telegram alerts (shared table).
   const displaySetup = isRanging ? 'Wait for clarity' : strategyName(setupType);
 

@@ -4,7 +4,7 @@ import { computeSwingConfidence } from '../_shared/analysis/swingConfidence.ts';
 import type { TradingInstrument, TrendDirection } from '../_shared/analysis/core.ts';
 import { findOrderBlocks as findOrderBlocksShared, findFairValueGaps as findFairValueGapsShared, analyzeAsianSession } from '../_shared/analysis/smcAnalysis.ts';
 import type { OrderBlock, FairValueGap } from '../_shared/analysis/smcAnalysis.ts';
-import { entryNeedsFill, evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE, SMC_US100_SETUP_TYPE } from '../_shared/analysis/smcChochFvg.ts';
+import { entryNeedsFill, evaluateSmcChochFvg, resolutionStartEpoch, SMC_CONFIDENCE, SMC_SETUP_TYPE, SMC_US100_SETUP_TYPE, smcSetupTypeFor } from '../_shared/analysis/smcChochFvg.ts';
 import { maxHoldHours } from '../_shared/analysis/holdLimits.ts';
 import { formatLotSuggestion, suggestLots } from '../_shared/analysis/positionSize.ts';
 import { alertHeader, strategyLabel, strategyName } from '../_shared/analysis/strategyNames.ts';
@@ -93,24 +93,29 @@ const DERIV_SYMBOL_MAP: Record<string, string> = {
   'EUR/USD': 'frxEURUSD', 'GBP/USD': 'frxGBPUSD', 'USD/JPY': 'frxUSDJPY',
   'AUD/USD': 'frxAUDUSD', 'GBP/JPY': 'frxGBPJPY', 'XAU/USD': 'frxXAUUSD',
   'V10': 'R_10', 'V25': 'R_25', 'V50': 'R_50', 'V75': 'R_75', 'V100': 'R_100', 'BOOM1000': 'BOOM1000',
-  // Shadow (forward-test) instruments.
   'XAG/USD': 'frxXAGUSD', 'US100': 'OTC_NDX',
 };
 
+/** Every synthetic, V50/V100 included: old signals on them still resolve. */
 const SYNTHETIC_INDICES = ['V10', 'V25', 'V50', 'V75', 'V100', 'BOOM1000'];
 const FOREX_INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'GBP/JPY', 'XAU/USD'];
-const ALL_INSTRUMENTS = [...FOREX_INSTRUMENTS, ...SYNTHETIC_INDICES];
+/** Silver and US100 replaced V50/V100 on 2026-10-31 (shadow-tested from 2026-10-26). */
+const MARKET_INSTRUMENTS = ['XAG/USD', 'US100'];
+const ACTIVE_SYNTHETICS = ['V10', 'V25', 'V75', 'BOOM1000'];
+const ALL_INSTRUMENTS = [...FOREX_INSTRUMENTS, ...MARKET_INSTRUMENTS, ...ACTIVE_SYNTHETICS];
 
 const isSyntheticIndex = (instrument: string) => SYNTHETIC_INDICES.includes(instrument);
 const isGemSetupType = (type?: string | null): boolean =>
   typeof type === 'string' && Object.values(GEM_SETUP_TYPES).includes(type as any);
 const getPipValue = (instrument: string) => {
   if (isSyntheticIndex(instrument)) return 0.01;
-  if (instrument === 'USD/JPY' || instrument === 'GBP/JPY') return 0.01;
+  if (instrument === 'USD/JPY' || instrument === 'GBP/JPY' || instrument === 'XAU/USD' || instrument === 'XAG/USD') return 0.01;
+  if (instrument === 'US100') return 1;
   return 0.0001;
 };
 const getDecimals = (instrument: string) => {
-  if (isSyntheticIndex(instrument) || instrument.includes('JPY') || instrument === 'XAU/USD') return 2;
+  if (isSyntheticIndex(instrument) || instrument.includes('JPY') || instrument === 'XAU/USD' || instrument === 'US100') return 2;
+  if (instrument === 'XAG/USD') return 3;
   return 4;
 };
 
@@ -169,7 +174,7 @@ async function sendTelegramSignalAlert(
 
   const gate = extractStructuralGate(saved.reasoning || '');
   // SMC CHoCH + FVG is rule-based: a limit order with one target and no score.
-  const isSmc = saved.setup_type === SMC_SETUP_TYPE;
+  const isSmc = saved.setup_type === SMC_SETUP_TYPE || saved.setup_type === SMC_US100_SETUP_TYPE;
   const isGem = isGemSetupType(saved.setup_type);
   // The V75 inside-bar gem waits at the broken level, like the SMC limit order.
   const isPendingGem = saved.setup_type === GEM_SETUP_TYPES.V75_INSIDEBAR;
@@ -996,16 +1001,8 @@ function generateSmcSignal(
 // signals are saved with shadow = true, alerted as "SHADOW TEST — do not trade", kept
 // out of the app's lists and stats, and skip the arbiter so they never block a real
 // signal. Outcomes resolve as usual; Yaw compares them with their backtests.
-const SHADOW_STRATEGIES: { instrument: string; evaluate: (h4: CandleData[], h1: CandleData[], now: number) => SignalOutput | null }[] = [
-  {
-    instrument: 'XAG/USD',
-    evaluate: (h4, h1, now) => { const g = evaluateXagDonchian(h4, now); return g ? generateSelectiveGemSignal(g, h1, now) : null; },
-  },
-  {
-    instrument: 'US100',
-    evaluate: (h4, h1, now) => { const smc = generateSmcSignal('US100', h4, h1, now); return smc ? { ...smc, setup_type: SMC_US100_SETUP_TYPE } : null; },
-  },
-];
+// Silver Donchian and US100 SMC ran here from 2026-10-26 and went live on 2026-10-31.
+const SHADOW_STRATEGIES: { instrument: string; evaluate: (h4: CandleData[], h1: CandleData[], now: number) => SignalOutput | null }[] = [];
 
 async function runShadowStrategies(supabase: ReturnType<typeof createClient>, settings: Record<string, any>, errors: string[]) {
   const nowEpoch = Math.floor(Date.now() / 1000);
@@ -1793,7 +1790,7 @@ async function checkOutcomes(supabase: any) {
 
   for (const signal of pending) {
     try {
-      const pipMult = signal.instrument.includes('JPY') ? 100 : isSyntheticIndex(signal.instrument) ? 100 : signal.instrument === 'XAU/USD' ? 100 : 10000;
+      const pipMult = signal.instrument.includes('JPY') || isSyntheticIndex(signal.instrument) ? 100 : 1 / getPipValue(signal.instrument);
       const direction: 'bullish' | 'bearish' = signal.direction === 'bearish' ? 'bearish' : 'bullish';
 
       let outcome: string | null = null;
@@ -1929,7 +1926,7 @@ async function reresolveHistory(supabase: any, from: string, limit = 5000) {
     scanned++;
 
     const direction: 'bullish' | 'bearish' = signal.direction === 'bearish' ? 'bearish' : 'bullish';
-    const pipMult = getPipValue(signal.instrument) === 0.01 ? 100 : 10000;
+    const pipMult = isSyntheticIndex(signal.instrument) ? 100 : 1 / getPipValue(signal.instrument);
 
     const intrabar = resolveIntrabar({
       direction,
@@ -2086,7 +2083,18 @@ Deno.serve(async (req) => {
           const symbol = DERIV_SYMBOL_MAP[instrument];
           let candidates: (SignalOutput | null)[];
 
-          if (isForex) {
+          if (MARKET_INSTRUMENTS.includes(instrument)) {
+            // Silver trades its H4 Donchian gem; US100 trades the SMC rule under its own setup type.
+            const [fourHour, oneHour] = await Promise.all([fetchCandles(symbol, 14400, 250), fetchCandles(symbol, 3600, 200)]);
+            const nowEpoch = Math.floor(Date.now() / 1000);
+            if (instrument === 'XAG/USD') {
+              const gem = evaluateXagDonchian(fourHour, nowEpoch);
+              candidates = [gem ? generateSelectiveGemSignal(gem, oneHour, nowEpoch) : null];
+            } else {
+              const smc = generateSmcSignal(instrument, fourHour, oneHour, nowEpoch);
+              candidates = [smc ? { ...smc, setup_type: smcSetupTypeFor(instrument) } : null];
+            }
+          } else if (isForex) {
             // Forex and gold: SMC CHoCH + FVG primary; if no setup, EUR/USD also checks its Z-score gem
             const fetches: Promise<CandleData[]>[] = [
               // USD/JPY's Z-score gem reads the H4 EMA50, which needs a longer H4 window.
@@ -2120,8 +2128,8 @@ Deno.serve(async (req) => {
           } else {
             // Synthetics trade three rules: the V10 H4 star reversal and the BOOM1000 H4
             // Donchian breakout (swing, adopted from Esi's research) and the V75 inside-bar
-            // gem (day). The scored strategies lost money after costs in testing, so V25,
-            // V50 and V100 issue no signals.
+            // gem (day). The scored strategies lost money after costs in testing, so V25
+            // issues no signals (V50 and V100 are no longer scanned).
             if (instrument !== 'V10' && instrument !== 'V75' && instrument !== 'BOOM1000') continue;
             const [fourHour, oneHour, fifteenMin] = await Promise.all([
               fetchCandles(symbol, 14400, 250),
@@ -2143,7 +2151,7 @@ Deno.serve(async (req) => {
           for (const signal of candidates) {
             if (!signal) continue;
             // The rule-based strategy has no score, so the confidence threshold does not apply to it.
-            const isSmc = signal.setup_type === SMC_SETUP_TYPE;
+            const isSmc = signal.setup_type === SMC_SETUP_TYPE || signal.setup_type === SMC_US100_SETUP_TYPE;
             const isGem = isGemSetupType(signal.setup_type);
             const isRuleBased = isSmc || isGem;
             if (!isRuleBased && signal.confidence < settings.notify_min_confidence) continue;

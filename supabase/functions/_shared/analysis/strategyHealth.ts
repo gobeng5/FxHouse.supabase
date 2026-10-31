@@ -37,13 +37,13 @@ export const BENCHMARKS: Record<string, Benchmark> = {
     label: 'V10 Star', liveSince: '2026-10-23T22:00:00Z', avgR: 0.409, sdR: 1.499, winRate: 47.7, worstLosingStreak: 3, tradesPerYear: 44,
     byRegime: { quiet: { n: 8, avgR: -0.625 }, normal: { n: 20, avgR: 1.25 }, wild: { n: 16, avgR: -0.124 } },
   },
-  // ---- Shadow strategies: forward test only, signals to the admin marked "do not trade" ----
+  // Silver and US100 ran in shadow mode from 2026-10-26 and went live on 2026-10-31; both count.
   gem_xag_donchian: {
-    label: 'Silver Donchian (shadow)', liveSince: '2026-10-26T12:00:00Z', avgR: 0.587, sdR: 1.899, winRate: 45.3, worstLosingStreak: 3, tradesPerYear: 53,
+    label: 'Silver Donchian', liveSince: '2026-10-26T12:00:00Z', avgR: 0.587, sdR: 1.899, winRate: 45.3, worstLosingStreak: 3, tradesPerYear: 53,
     byRegime: { quiet: { n: 8, avgR: 0.99 }, normal: { n: 21, avgR: 0.501 }, wild: { n: 24, avgR: 0.528 } },
   },
   smc_choch_fvg_us100: {
-    label: 'US100 SMC (shadow)', liveSince: '2026-10-26T12:00:00Z', avgR: 0.91, sdR: 1.619, winRate: 66.7, worstLosingStreak: 1, tradesPerYear: 12,
+    label: 'US100 SMC', liveSince: '2026-10-26T12:00:00Z', avgR: 0.91, sdR: 1.619, winRate: 66.7, worstLosingStreak: 1, tradesPerYear: 12,
     byRegime: { quiet: { n: 5, avgR: 1.194 }, normal: { n: 5, avgR: 0.794 }, wild: { n: 2, avgR: 0.493 } },
   },
   gem_boom1000_donchian: {
@@ -72,6 +72,7 @@ export const STRATEGIES_BY_INSTRUMENT: Record<string, string[]> = {
   'EUR/USD': ['smc_choch_fvg', 'gem_eurusd_zscore'],
   'GBP/USD': ['smc_choch_fvg'], 'USD/JPY': ['smc_choch_fvg', 'gem_usdjpy_zscore'], 'AUD/USD': ['smc_choch_fvg'],
   'GBP/JPY': ['smc_choch_fvg'], 'XAU/USD': ['smc_choch_fvg'],
+  'XAG/USD': ['gem_xag_donchian'], US100: ['smc_choch_fvg_us100'],
 };
 
 /** Deriv's stated annual volatility for the indices (V10 = 10%, ...). */

@@ -36,7 +36,8 @@ const DRIFT_THRESHOLD_PIPS: Record<'swing' | 'day', number> = {
 
 const getPipMultiplier = (instrument: string) => {
   if (instrument.includes('JPY')) return 100;
-  if (instrument === 'XAU/USD' || instrument.toLowerCase().includes('gold')) return 100;
+  if (instrument === 'XAU/USD' || instrument === 'XAG/USD' || instrument.toLowerCase().includes('gold')) return 100;
+  if (instrument === 'US100') return 1;
   if (instrument.startsWith('V') || instrument.toLowerCase().includes('volatility')) return 100;
   return 10000;
 };

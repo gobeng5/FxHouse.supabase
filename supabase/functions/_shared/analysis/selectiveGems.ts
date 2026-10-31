@@ -547,8 +547,8 @@ export function evaluateBoom1000Donchian(h4Candles: CandleData[], nowEpoch: numb
 }
 
 /**
- * SHADOW — Silver (XAG/USD) H4 Donchian body breakout. Forward-tested in shadow mode
- * (signals to the admin only, marked "do not trade") before any user sees it.
+ * Silver (XAG/USD) H4 Donchian body breakout. Live since 2026-10-31, after a shadow
+ * forward test from 2026-10-26 (it replaced V50/V100 in the instrument list).
  * Setup: the last closed H4 candle has range >= 1.2 ATR(14, H4) and a body >= 60% of it,
  *   and closes beyond the high (long, green) or low (short, red) of the 20 candles before it.
  * Signal: on the first hourly run after it closes, a market order at its close.
@@ -588,7 +588,7 @@ export function evaluateXagDonchian(h4Candles: CandleData[], nowEpoch: number): 
     setupType: GEM_SETUP_TYPES.XAG_DONCHIAN,
     tradeType: 'swing',
     triggerCloseEpoch: closeEpoch,
-    reason: `SHADOW TEST — Silver Donchian Breakout: the H4 candle closed at ${utc(closeEpoch)} UTC with a ${Math.round((body / range) * 100)}% body beyond the 20-candle ${side} ${(dir === 1 ? hi : lo).toFixed(3)}. Forward test only; do not trade.`,
+    reason: `Silver Donchian Breakout: the H4 candle closed at ${utc(closeEpoch)} UTC with a ${Math.round((body / range) * 100)}% body beyond the 20-candle ${side} ${(dir === 1 ? hi : lo).toFixed(3)}. Market entry at its close. Backtest +0.59R/trade, but fading over the year (+1.34 / +0.24 / +0.06R by third).`,
     parameters: [
       { label: 'Signal candle', value: `H4 closed ${utc(closeEpoch)} UTC`, weight: 1, maxWeight: 1, contributing: true },
       { label: 'Breakout candle', value: `range ${(range / atr).toFixed(2)}x ATR, body ${Math.round((body / range) * 100)}%`, weight: 1, maxWeight: 1, contributing: true },

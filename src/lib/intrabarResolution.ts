@@ -232,7 +232,8 @@ export function resolveIntrabar(
 /** Pip size helper mirroring the journal's convention. */
 export function pipSize(instrument: string): number {
   const s = instrument.toUpperCase();
-  if (s.includes('JPY') || s.includes('XAU') || /^(V\d+|BOOM|CRASH)/.test(s)) return 0.01;
+  if (s.includes('JPY') || s.includes('XAU') || s.includes('XAG') || /^(V\d+|BOOM|CRASH)/.test(s)) return 0.01;
+  if (s === 'US100') return 1;
   return 0.0001;
 }
 

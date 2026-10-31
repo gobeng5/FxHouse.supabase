@@ -30,6 +30,8 @@ export const DERIV_SYMBOL_MAP: Record<TradingInstrument, string> = {
   'AUD/USD': 'frxAUDUSD',
   'GBP/JPY': 'frxGBPJPY',
   'XAU/USD': 'frxXAUUSD',
+  'XAG/USD': 'frxXAGUSD',
+  'US100': 'OTC_NDX',
   // Synthetic indices (trade 24/7)
   'V10': 'R_10',
   'V25': 'R_25',
@@ -47,6 +49,8 @@ export const INSTRUMENT_DISPLAY_NAMES: Record<TradingInstrument, string> = {
   'AUD/USD': 'AUD/USD',
   'GBP/JPY': 'GBP/JPY',
   'XAU/USD': 'Gold (XAU/USD)',
+  'XAG/USD': 'Silver (XAG/USD)',
+  'US100': 'US Tech 100',
   'V10': 'Volatility 10',
   'V25': 'Volatility 25',
   'V50': 'Volatility 50',
