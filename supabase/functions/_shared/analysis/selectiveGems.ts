@@ -27,6 +27,8 @@ export const GEM_SETUP_TYPES = {
   XAG_DONCHIAN: 'gem_xag_donchian',
   USDJPY_ZSCORE: 'gem_usdjpy_zscore',
   GBPUSD_ZSCORE: 'gem_gbpusd_zscore',
+  XAU_ASIA_BREAKOUT: 'gem_xau_asia_breakout',
+  V75_INSIDE_H1: 'gem_v75_inside_h1',
 } as const;
 
 export interface GemParameter {
@@ -751,6 +753,100 @@ export function evaluateGbpUsdZScore(h1Candles: CandleData[], nowEpoch: number):
       { label: 'Quiet range', value: `ADX(14) ${adx.toFixed(1)} under 20, 50 SMA flat`, weight: 1, maxWeight: 1, contributing: true },
       { label: 'Stop', value: 'wider of the stretch extreme and 1.5x ATR', weight: 1, maxWeight: 1, contributing: true },
       { label: 'Risk Geometry', value: `TP at the 20-bar mean ${dir === 1 ? '+' : '-'} 1 sd, out after 10h`, weight: 1, maxWeight: 1, contributing: true },
+    ],
+  };
+}
+
+/**
+ * SHADOW — Gold (XAU/USD) Asian-range breakout, day trade. Forward-tested in shadow mode
+ * (admin only, "do not trade").
+ * Setup: the Asian range is today's 00:00-07:00 UTC M15 high/low (at least 20 candles).
+ *   The first M15 candle opening 07:00-10:45 UTC that closes beyond it sets the direction.
+ * Signal: on the first hourly run after that candle closes, a market order (the engine runs
+ *   hourly, so the entry is at most 45 minutes after the breakout — tested that way).
+ * Risk: SL at the range midpoint; TP 2R from the entry; out after 10h.
+ * Backtest (backtest/py/day_study.py, year to 2026-10-07, hourly entry): 131 trades, 50% wins,
+ *   +0.22R/trade, holdout +0.35R (54), luck 1.2% — but chosen after seeing the holdout and
+ *   flat in the first third (+0.03R), so unproven.
+ */
+export function evaluateXauAsianBreakout(m15Candles: CandleData[], nowEpoch: number): SelectiveGemSetup | null {
+  const m15 = closedOnly(m15Candles, M15_SECONDS, nowEpoch);
+  if (!m15.length) return null;
+  const dayStart = Math.floor(nowEpoch / D1_SECONDS) * D1_SECONDS;
+  const today = m15.filter(c => c.epoch >= dayStart);
+  const asia = today.filter(c => c.epoch < dayStart + 7 * 3600);
+  if (asia.length < 20) return null;
+  const hi = Math.max(...asia.map(c => c.high)), lo = Math.min(...asia.map(c => c.low));
+  const window = today.filter(c => c.epoch >= dayStart + 7 * 3600 && c.epoch < dayStart + 11 * 3600);
+  const brk = window.find(c => c.close > hi || c.close < lo);
+  if (!brk) return null;
+  const closeEpoch = brk.epoch + M15_SECONDS;
+  if (closeEpoch <= nowEpoch - H1_SECONDS) return null;   // only on the first run after it closes
+  const dir: 1 | -1 = brk.close > hi ? 1 : -1;
+
+  const entry = m15[m15.length - 1].close;
+  const mid = (hi + lo) / 2;
+  if (dir * (entry - mid) <= 0) return null;
+  const round2 = (v: number) => Math.round(v * 100) / 100;
+  const utc = (e: number) => new Date(e * 1000).toISOString().slice(11, 16);
+  return {
+    instrument: 'XAU/USD',
+    direction: dir === 1 ? 'bullish' : 'bearish',
+    entry,
+    stopLoss: round2(mid),
+    takeProfit: round2(entry + dir * 2 * Math.abs(entry - mid)),
+    atr: hi - lo,
+    confidence: 65,
+    setupType: GEM_SETUP_TYPES.XAU_ASIA_BREAKOUT,
+    tradeType: 'day',
+    triggerCloseEpoch: closeEpoch,
+    reason: `SHADOW TEST — Gold Asian Breakout: the M15 candle closed at ${utc(closeEpoch)} UTC ${dir === 1 ? 'above' : 'below'} the 00:00-07:00 UTC range ${lo.toFixed(2)}-${hi.toFixed(2)}. Market entry; stop at the range midpoint ${mid.toFixed(2)}, target 2R, out after 10h. Forward test only; do not trade.`,
+    parameters: [
+      { label: 'Asian range', value: `${lo.toFixed(2)}-${hi.toFixed(2)} (00:00-07:00 UTC)`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Breakout', value: `first M15 close ${dir === 1 ? 'above' : 'below'} it, ${utc(closeEpoch)} UTC`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Risk Geometry', value: 'SL range midpoint, TP 2R, out after 10h', weight: 1, maxWeight: 1, contributing: true },
+    ],
+  };
+}
+
+/**
+ * SHADOW — V75 H1 inside-bar breakout, day trade (admin only, "do not trade").
+ * Setup: the previous H1 candle sits inside the one before it (the mother bar); the last
+ *   closed H1 candle closes beyond the mother bar's high (long) or low (short).
+ * Signal: on the first hourly run after it closes, a market order at its close.
+ * Risk: SL at the mother bar's far side; TP 2R; out after 12h.
+ * Backtest (backtest/py/day_study.py, year to 2026-10-07): 266 trades, +0.12R/trade, holdout
+ *   +0.10R (100), luck 1.3% over the year — chosen after seeing the holdout, so unproven.
+ */
+export function evaluateV75InsideBarH1(h1Candles: CandleData[], nowEpoch: number): SelectiveGemSetup | null {
+  const h1 = closedOnly(h1Candles, H1_SECONDS, nowEpoch);
+  if (h1.length < 3) return null;
+  const c = h1[h1.length - 1], inner = h1[h1.length - 2], mother = h1[h1.length - 3];
+  const closeEpoch = c.epoch + H1_SECONDS;
+  if (closeEpoch <= nowEpoch - H1_SECONDS) return null;
+  if (!(inner.high <= mother.high && inner.low >= mother.low)) return null;
+  const dir: 1 | -1 | 0 = c.close > mother.high ? 1 : c.close < mother.low ? -1 : 0;
+  if (!dir) return null;
+  const entry = c.close;
+  const stop = dir === 1 ? mother.low : mother.high;
+  const round2 = (v: number) => Math.round(v * 100) / 100;
+  const utc = (e: number) => new Date(e * 1000).toISOString().slice(5, 16).replace('T', ' ');
+  return {
+    instrument: 'V75',
+    direction: dir === 1 ? 'bullish' : 'bearish',
+    entry,
+    stopLoss: stop,
+    takeProfit: round2(entry + dir * 2 * Math.abs(entry - stop)),
+    atr: mother.high - mother.low,
+    confidence: 65,
+    setupType: GEM_SETUP_TYPES.V75_INSIDE_H1,
+    tradeType: 'day',
+    triggerCloseEpoch: closeEpoch,
+    reason: `SHADOW TEST — V75 H1 Inside-Bar Breakout: the H1 candle closed at ${utc(closeEpoch)} UTC ${dir === 1 ? 'above' : 'below'} the mother bar ${mother.low.toFixed(2)}-${mother.high.toFixed(2)}. Market entry; stop at its far side, target 2R, out after 12h. Forward test only; do not trade.`,
+    parameters: [
+      { label: 'Inside bar', value: `H1 candle inside the mother bar ${mother.low.toFixed(2)}-${mother.high.toFixed(2)}`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Breakout', value: `H1 close ${dir === 1 ? 'above' : 'below'} the mother bar, ${utc(closeEpoch)} UTC`, weight: 1, maxWeight: 1, contributing: true },
+      { label: 'Risk Geometry', value: 'SL mother bar far side, TP 2R, out after 12h', weight: 1, maxWeight: 1, contributing: true },
     ],
   };
 }

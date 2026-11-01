@@ -16,6 +16,8 @@ const NAMES: Record<string, string> = {
   gem_eurusd_zscore: 'EUR/USD Z-Score Reversion',
   gem_usdjpy_zscore: 'USD/JPY Z-Score Reversion',
   gem_gbpusd_zscore: 'GBP/USD Z-Score Reversion (shadow)',
+  gem_xau_asia_breakout: 'Gold Asian Breakout (shadow)',
+  gem_v75_inside_h1: 'V75 H1 Inside-Bar Breakout (shadow)',
   gem_gbpjpy_momentum: 'GBP/JPY Momentum',
   gem_boom1000_momentum: 'BOOM1000 Momentum',
   trend_continuation: 'Trend Continuation',
@@ -35,6 +37,8 @@ const ORDER: Record<string, string> = {
   gem_eurusd_zscore: 'market order',
   gem_usdjpy_zscore: 'market order',
   gem_gbpusd_zscore: 'market order',
+  gem_xau_asia_breakout: 'market order',
+  gem_v75_inside_h1: 'market order',
   gem_gbpjpy_momentum: 'market order',
   gem_boom1000_momentum: 'market order',
 };

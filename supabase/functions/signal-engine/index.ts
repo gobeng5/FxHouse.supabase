@@ -16,6 +16,8 @@ import {
   evaluateXagDonchian,
   evaluateUsdJpyZScore,
   evaluateGbpUsdZScore,
+  evaluateXauAsianBreakout,
+  evaluateV75InsideBarH1,
   GEM_SETUP_TYPES,
   type SelectiveGemSetup,
 } from '../_shared/analysis/selectiveGems.ts';
@@ -1003,7 +1005,7 @@ function generateSmcSignal(
 // out of the app's lists and stats, and skip the arbiter so they never block a real
 // signal. Outcomes resolve as usual; Yaw compares them with their backtests.
 // Silver Donchian and US100 SMC ran here from 2026-10-26 and went live on 2026-10-31.
-const SHADOW_STRATEGIES: { instrument: string; evaluate: (h4: CandleData[], h1: CandleData[], now: number) => SignalOutput | null }[] = [
+const SHADOW_STRATEGIES: { instrument: string; m15?: boolean; evaluate: (h4: CandleData[], h1: CandleData[], now: number, m15: CandleData[]) => SignalOutput | null }[] = [
   {
     // The GBP/USD z-score gem as it would run live: only in hours when SMC has no GBP/USD setup.
     instrument: 'GBP/USD',
@@ -1013,6 +1015,17 @@ const SHADOW_STRATEGIES: { instrument: string; evaluate: (h4: CandleData[], h1: 
       return g ? generateSelectiveGemSignal(g, h1, now) : null;
     },
   },
+  {
+    // Day trade: the first M15 close beyond gold's 00:00-07:00 UTC range, taken on the next hourly run.
+    instrument: 'XAU/USD',
+    m15: true,
+    evaluate: (_h4, h1, now, m15) => { const g = evaluateXauAsianBreakout(m15, now); return g ? generateSelectiveGemSignal(g, h1, now) : null; },
+  },
+  {
+    // Day trade: H1 inside-bar breakout, 2R, out after 12h.
+    instrument: 'V75',
+    evaluate: (_h4, h1, now) => { const g = evaluateV75InsideBarH1(h1, now); return g ? generateSelectiveGemSignal(g, h1, now) : null; },
+  },
 ];
 
 async function runShadowStrategies(supabase: ReturnType<typeof createClient>, settings: Record<string, any>, errors: string[]) {
@@ -1020,8 +1033,10 @@ async function runShadowStrategies(supabase: ReturnType<typeof createClient>, se
   for (const sh of SHADOW_STRATEGIES) {
     try {
       const symbol = DERIV_SYMBOL_MAP[sh.instrument];
-      const [fourHour, oneHour] = await Promise.all([fetchCandles(symbol, 14400, 250), fetchCandles(symbol, 3600, 200)]);
-      const signal = sh.evaluate(fourHour, oneHour, nowEpoch);
+      const [fourHour, oneHour, fifteen] = await Promise.all([
+        fetchCandles(symbol, 14400, 250), fetchCandles(symbol, 3600, 200), sh.m15 ? fetchCandles(symbol, 900, 120) : Promise.resolve([]),
+      ]);
+      const signal = sh.evaluate(fourHour, oneHour, nowEpoch, fifteen);
       if (!signal) continue;
 
       // Once per trigger candle, and one open shadow trade per instrument.

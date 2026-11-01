@@ -21,6 +21,8 @@ const HOLD_HOURS_BY_SETUP: Record<string, number> = {
   gem_eurusd_zscore: 120,     // backtest/forwardtest-2.1.ts, swing
   gem_usdjpy_zscore: 72,      // backtest/zscore-per-pair-design.ts
   gem_gbpusd_zscore: 10,      // shadow; backtest/py/fx_playbook.py (10-bar time stop)
+  gem_xau_asia_breakout: 10,  // shadow; backtest/py/day_study.py
+  gem_v75_inside_h1: 12,      // shadow; backtest/py/day_study.py
   gem_gbpjpy_momentum: 120,   // backtest/forwardtest-2.1.ts, swing
   gem_boom1000_momentum: 48,  // backtest/forwardtest-2.1.ts, day
 };

@@ -22,7 +22,7 @@ import { cleanSeries, firstIndexAtOrAfter, loadData } from './lib';
 import type { Candle, Series } from './lib';
 import { PRIMARY, setups as researchSetups } from './smc-choch-fvg';
 import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE, SMC_US100_SETUP_TYPE } from '../supabase/functions/_shared/analysis/smcChochFvg';
-import { evaluateGbpUsdZScore, evaluateXagDonchian } from '../supabase/functions/_shared/analysis/selectiveGems';
+import { evaluateGbpUsdZScore, evaluateV75InsideBarH1, evaluateXagDonchian, evaluateXauAsianBreakout } from '../supabase/functions/_shared/analysis/selectiveGems';
 import { generateTradePlan } from '../src/lib/tradeSignalGenerator';
 import type { TradingInstrument } from '../src/types/trading';
 
@@ -238,6 +238,29 @@ ${msg}
   const h4 = candlesAt('GBP/USD', 14400, 300);
   const plan = generateTradePlan('GBP/USD', candlesAt('GBP/USD', 86400, 200), h4, candlesAt('GBP/USD', 3600, 200), h4[h4.length - 2].close, null, nowEpoch);
   check('web app shows no GBP/USD z-score setup', plan.recommendation.setupType !== 'gem_gbpusd_zscore');
+}
+
+// Day-trade shadow gems: gold Asian breakout (M15) and V75 H1 inside bar — admins only.
+for (const [inst, setup, find] of [
+  ['XAU/USD', 'gem_xau_asia_breakout', (t: number) => evaluateXauAsianBreakout(candlesAt('XAU/USD', 900, 120), t)],
+  ['V75', 'gem_v75_inside_h1', (t: number) => evaluateV75InsideBarH1(candlesAt('V75', 3600, 200), t)],
+] as const) {
+  const hours = series.get(inst)!.h1.map(c => c.epoch + 3600 + 60);
+  const fires = hours.filter(t => { nowEpoch = t; return find(t); });
+  nowEpoch = fires[Math.floor(fires.length / 2)];
+  console.log(`\n===== ${inst} ${setup} shadow at ${new Date(nowEpoch * 1000).toISOString()} =====`);
+  admin = false;
+  await runEngine();
+  check(`non-admin: no ${setup} signal saved`, !inserts.some(r => r.setup_type === setup));
+  admin = true;
+  const body = await runEngine();
+  admin = false;
+  const rows = inserts.filter(r => r.setup_type === setup);
+  const g = find(nowEpoch)!;
+  check(`admin: one ${setup} signal saved, marked shadow, day trade`, rows.length === 1 && rows[0].shadow === true && rows[0].trade_type === 'day',
+    `saved ${rows.length}; errors ${JSON.stringify(body.errors ?? [])}`);
+  check('levels equal the shared gem', rows[0]?.entry_price === g.entry && rows[0]?.stop_loss === g.stopLoss && rows[0]?.take_profit_2 === g.takeProfit);
+  check('alert marked SHADOW TEST', telegram.some(m => m.includes(inst) && m.includes('SHADOW TEST')));
 }
 
 // Synthetics still go through the existing engine path.

@@ -55,6 +55,14 @@ export const BENCHMARKS: Record<string, Benchmark> = {
     byRegime: { quiet: { n: 14, avgR: 0.206 }, normal: { n: 35, avgR: 0.441 }, wild: { n: 10, avgR: 0.484 } },
   },
   // Shadow: forward test only, signals to the admin marked "do not trade".
+  gem_xau_asia_breakout: {
+    label: 'Gold Asian breakout (shadow)', liveSince: '2026-11-01T00:00:00Z', avgR: 0.215, sdR: 1.216, winRate: 49.6, worstLosingStreak: 6, tradesPerYear: 131,
+    byRegime: { quiet: { n: 66, avgR: 0.168 }, normal: { n: 47, avgR: 0.221 }, wild: { n: 18, avgR: 0.371 } },
+  },
+  gem_v75_inside_h1: {
+    label: 'V75 H1 inside-bar (shadow)', liveSince: '2026-11-01T00:00:00Z', avgR: 0.114, sdR: 1.187, winRate: 47.4, worstLosingStreak: 8, tradesPerYear: 266,
+    byRegime: { quiet: { n: 70, avgR: 0.214 }, normal: { n: 117, avgR: 0.035 }, wild: { n: 79, avgR: 0.144 } },
+  },
   gem_gbpusd_zscore: {
     label: 'GBP/USD Z-score (shadow)', liveSince: '2026-10-31T00:00:00Z', avgR: 0.081, sdR: 1.03, winRate: 54.9, worstLosingStreak: 4, tradesPerYear: 71,
     byRegime: { quiet: { n: 19, avgR: -0.055 }, normal: { n: 38, avgR: 0.008 }, wild: { n: 14, avgR: 0.463 } },
