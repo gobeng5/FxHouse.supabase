@@ -34,10 +34,7 @@ export const DERIV_SYMBOL_MAP: Record<TradingInstrument, string> = {
   'US100': 'OTC_NDX',
   // Synthetic indices (trade 24/7)
   'V10': 'R_10',
-  'V25': 'R_25',
-  'V50': 'R_50',
   'V75': 'R_75',
-  'V100': 'R_100',
   'BOOM1000': 'BOOM1000',
 };
 
@@ -52,9 +49,6 @@ export const INSTRUMENT_DISPLAY_NAMES: Record<TradingInstrument, string> = {
   'XAG/USD': 'Silver (XAG/USD)',
   'US100': 'US Tech 100',
   'V10': 'Volatility 10',
-  'V25': 'Volatility 25',
-  'V50': 'Volatility 50',
   'V75': 'Volatility 75',
-  'V100': 'Volatility 100',
   'BOOM1000': 'Boom 1000',
 };

@@ -95,16 +95,16 @@ async function derivRequest(payload: Record<string, unknown>, timeoutMs: number)
 const DERIV_SYMBOL_MAP: Record<string, string> = {
   'EUR/USD': 'frxEURUSD', 'GBP/USD': 'frxGBPUSD', 'USD/JPY': 'frxUSDJPY',
   'AUD/USD': 'frxAUDUSD', 'GBP/JPY': 'frxGBPJPY', 'XAU/USD': 'frxXAUUSD',
-  'V10': 'R_10', 'V25': 'R_25', 'V50': 'R_50', 'V75': 'R_75', 'V100': 'R_100', 'BOOM1000': 'BOOM1000',
+  'V10': 'R_10', 'V75': 'R_75', 'BOOM1000': 'BOOM1000',
   'XAG/USD': 'frxXAGUSD', 'US100': 'OTC_NDX',
 };
 
-/** Every synthetic, V50/V100 included: old signals on them still resolve. */
-const SYNTHETIC_INDICES = ['V10', 'V25', 'V50', 'V75', 'V100', 'BOOM1000'];
+/** V25, V50 and V100 were dropped on 2026-11-04; their signals moved to generated_signals_archive. */
+const SYNTHETIC_INDICES = ['V10', 'V75', 'BOOM1000'];
 const FOREX_INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'GBP/JPY', 'XAU/USD'];
 /** Silver and US100 replaced V50/V100 on 2026-10-31 (shadow-tested from 2026-10-26). */
 const MARKET_INSTRUMENTS = ['XAG/USD', 'US100'];
-const ACTIVE_SYNTHETICS = ['V10', 'V25', 'V75', 'BOOM1000'];
+const ACTIVE_SYNTHETICS = SYNTHETIC_INDICES;
 const ALL_INSTRUMENTS = [...FOREX_INSTRUMENTS, ...MARKET_INSTRUMENTS, ...ACTIVE_SYNTHETICS];
 
 const isSyntheticIndex = (instrument: string) => SYNTHETIC_INDICES.includes(instrument);
@@ -616,10 +616,7 @@ interface SyntheticProfileEdge {
 
 const SYNTH_PROFILES: Record<string, SyntheticProfileEdge> = {
   V10: { volatilityTier: 1, structureClarity: 5, slAtrMultiplier: 1.5, volumeExpansionMult: 0.5, maxConfluenceScore: 44, minScoreDifference: 2, consolidationBeforeBreakout: false, meanReversionAtExtremes: false, liquiditySweepWeightBoost: 1.5, behaviorNotes: ['Cleanest structure — HH/HL hold reliably', 'Minimal false breaks'] },
-  V25: { volatilityTier: 2, structureClarity: 5, slAtrMultiplier: 1.8, volumeExpansionMult: 0.5, maxConfluenceScore: 44, minScoreDifference: 2, consolidationBeforeBreakout: false, meanReversionAtExtremes: false, liquiditySweepWeightBoost: 1.5, behaviorNotes: ['Excellent structure clarity', 'FVGs between OBs especially reliable'] },
-  V50: { volatilityTier: 3, structureClarity: 4, slAtrMultiplier: 2.0, volumeExpansionMult: 0.55, maxConfluenceScore: 44, minScoreDifference: 3, consolidationBeforeBreakout: true, meanReversionAtExtremes: false, liquiditySweepWeightBoost: 1.3, behaviorNotes: ['Strong displacement candles define OB boundaries', 'Consolidation before explosive breaks'] },
   V75: { volatilityTier: 4, structureClarity: 3, slAtrMultiplier: 2.5, volumeExpansionMult: 0.6, maxConfluenceScore: 44, minScoreDifference: 3, consolidationBeforeBreakout: false, meanReversionAtExtremes: false, liquiditySweepWeightBoost: 1.5, behaviorNotes: ['Deep 50-61.8% retracements', 'Frequent liquidity sweeps', 'Strong 2-6hr trend phases'] },
-  V100: { volatilityTier: 5, structureClarity: 2, slAtrMultiplier: 3.0, volumeExpansionMult: 0.6, maxConfluenceScore: 44, minScoreDifference: 4, consolidationBeforeBreakout: false, meanReversionAtExtremes: true, liquiditySweepWeightBoost: 1.5, behaviorNotes: ['BOS/CHoCH form very fast', 'Large FVGs partially fill', 'Strong mean reversion at extremes'] },
   BOOM1000: { volatilityTier: 4, structureClarity: 3, slAtrMultiplier: 2.5, volumeExpansionMult: 0.6, maxConfluenceScore: 44, minScoreDifference: 3, consolidationBeforeBreakout: false, meanReversionAtExtremes: false, liquiditySweepWeightBoost: 1.3, behaviorNotes: ['Spike-driven structure', 'Demand zone retests after bearish candles'] },
 };
 
@@ -842,10 +839,7 @@ const SPREAD_TABLE: Record<string, number> = {
   'GBP/JPY': 0.025,
   'XAU/USD': 0.30,
   'V10': 0.02,
-  'V25': 0.10,
-  'V50': 0.60,
   'V75': 2.50,
-  'V100': 1.20,
   'BOOM1000': 0.60,
   // Shadow instruments — estimates until confirmed in MT5 (src/lib/spreadConfig.ts).
   'XAG/USD': 0.035,
@@ -2158,8 +2152,7 @@ Deno.serve(async (req) => {
           } else {
             // Synthetics trade three rules: the V10 H4 star reversal and the BOOM1000 H4
             // Donchian breakout (swing, adopted from Esi's research) and the V75 inside-bar
-            // gem (day). The scored strategies lost money after costs in testing, so V25
-            // issues no signals (V50 and V100 are no longer scanned).
+            // gem (day). V25, V50 and V100 are no longer scanned.
             if (instrument !== 'V10' && instrument !== 'V75' && instrument !== 'BOOM1000') continue;
             const [fourHour, oneHour, fifteenMin] = await Promise.all([
               fetchCandles(symbol, 14400, 250),

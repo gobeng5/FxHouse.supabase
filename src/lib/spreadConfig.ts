@@ -54,10 +54,7 @@ export const SPREAD_TABLE: Record<string, SpreadSpec> = {
 
   // ---- Deriv synthetic indices (published typical spreads, index points) --
   'V10': { spread: 0.02, note: 'Deriv Volatility 10 — 0.02 points' },
-  'V25': { spread: 0.10, note: 'Deriv Volatility 25 — 0.10 points' },
-  'V50': { spread: 0.60, note: 'Deriv Volatility 50 — 0.60 points' },
   'V75': { spread: 2.50, note: 'Deriv Volatility 75 — 2.50 points' },
-  'V100': { spread: 1.20, note: 'Deriv Volatility 100 — 1.20 points' },
   'BOOM1000': { spread: 0.60, note: 'Deriv Boom 1000 — 0.60 points' },
 
   // ---- Research candidates (conservative ESTIMATES — confirm in the MT5 symbol spec) --

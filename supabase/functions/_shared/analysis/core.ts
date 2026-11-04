@@ -6,14 +6,13 @@ export interface CandleData { open: number; high: number; low: number; close: nu
 
 /** Forex, metals and the US100 index: the real-market instruments (the app's "forex" tab). */
 export type CurrencyPair = 'EUR/USD' | 'GBP/USD' | 'USD/JPY' | 'AUD/USD' | 'GBP/JPY' | 'XAU/USD' | 'XAG/USD' | 'US100';
-export type SyntheticIndex = 'V10' | 'V25' | 'V50' | 'V75' | 'V100' | 'BOOM1000';
+export type SyntheticIndex = 'V10' | 'V75' | 'BOOM1000';
 export type TradingInstrument = CurrencyPair | SyntheticIndex;
 
 export const FOREX_PAIRS: CurrencyPair[] = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'GBP/JPY', 'XAU/USD', 'XAG/USD', 'US100'];
-/** Every synthetic index, including V50 and V100, which are no longer offered but still appear in old signals. */
-export const SYNTHETIC_INDICES: SyntheticIndex[] = ['V10', 'V25', 'V50', 'V75', 'V100', 'BOOM1000'];
-/** Synthetics the app lists and analyses. V50 and V100 were replaced by XAG/USD and US100. */
-export const ACTIVE_SYNTHETICS: SyntheticIndex[] = ['V10', 'V25', 'V75', 'BOOM1000'];
+/** Synthetics the app lists, analyses and keeps history for. V25, V50 and V100 were dropped (history archived 2026-11-04). */
+export const SYNTHETIC_INDICES: SyntheticIndex[] = ['V10', 'V75', 'BOOM1000'];
+export const ACTIVE_SYNTHETICS: SyntheticIndex[] = SYNTHETIC_INDICES;
 export const ALL_INSTRUMENTS: TradingInstrument[] = [...FOREX_PAIRS, ...ACTIVE_SYNTHETICS];
 
 export const isSyntheticIndex = (instrument: TradingInstrument | string): instrument is SyntheticIndex =>

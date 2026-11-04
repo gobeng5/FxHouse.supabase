@@ -108,66 +108,6 @@ const V10_PROFILE: SyntheticProfile = {
   ],
 };
 
-const V25_PROFILE: SyntheticProfile = {
-  name: 'Volatility 25',
-  volatilityTier: 2,
-  structureClarity: 5,
-  swingLookback: 4,
-  minSwingPairsForStructure: 3,
-  obQualityThreshold: 30,
-  obMaxCount: 8,
-  useWickTipRefinement: true,
-  fvgFillExpectation: 'high',
-  fvgMaxCount: 6,
-  liquidityToleranceMult: 0.9,
-  liquiditySweepWeightBoost: 1.5,
-  retracementDepth: 0.382,
-  slAtrMultiplier: 1.8,
-  tpAtrMultiplier: 1.0,
-  trendDurationHours: [3, 10],
-  volumeExpansionMult: 0.5,
-  consolidationBeforeBreakout: false,
-  displacementBodyMult: 2.0,
-  meanReversionAtExtremes: false,
-  minScoreDifference: 2,
-  maxConfluenceScore: 44,
-  behaviorNotes: [
-    'Excellent structure clarity — BOS/CHoCH clean and consistent',
-    'FVGs between OBs and next structure level are especially reliable',
-    'EMA-based trend structure holds very well',
-  ],
-};
-
-const V50_PROFILE: SyntheticProfile = {
-  name: 'Volatility 50',
-  volatilityTier: 3,
-  structureClarity: 4,
-  swingLookback: 4,
-  minSwingPairsForStructure: 3,
-  obQualityThreshold: 35,
-  obMaxCount: 7,
-  useWickTipRefinement: true,
-  fvgFillExpectation: 'high',
-  fvgMaxCount: 5,
-  liquidityToleranceMult: 1.0,
-  liquiditySweepWeightBoost: 1.3,
-  retracementDepth: 0.5,
-  slAtrMultiplier: 2.0,
-  tpAtrMultiplier: 1.2,
-  trendDurationHours: [2, 8],
-  volumeExpansionMult: 0.55,
-  consolidationBeforeBreakout: true,
-  displacementBodyMult: 2.0,
-  meanReversionAtExtremes: false,
-  minScoreDifference: 3,
-  maxConfluenceScore: 44,
-  behaviorNotes: [
-    'Strong displacement candles clearly define OB boundaries',
-    'FVGs form and fill more reliably than real markets',
-    'Consolidation phases before explosive structural breaks are a key signature',
-  ],
-};
-
 const V75_PROFILE: SyntheticProfile = {
   name: 'Volatility 75',
   volatilityTier: 4,
@@ -198,36 +138,6 @@ const V75_PROFILE: SyntheticProfile = {
     'Frequent liquidity sweeps of equal highs/lows',
     'Regular false breakouts before sharp reversals',
     'Strong trend phases lasting 2–6 hours once direction is established',
-  ],
-};
-
-const V100_PROFILE: SyntheticProfile = {
-  name: 'Volatility 100',
-  volatilityTier: 5,
-  structureClarity: 2,
-  swingLookback: 2,
-  minSwingPairsForStructure: 2,
-  obQualityThreshold: 45,
-  obMaxCount: 6,
-  useWickTipRefinement: true,
-  fvgFillExpectation: 'moderate',
-  fvgMaxCount: 4,
-  liquidityToleranceMult: 1.5,
-  liquiditySweepWeightBoost: 1.5,
-  retracementDepth: 0.5,
-  slAtrMultiplier: 3.0,
-  tpAtrMultiplier: 1.8,
-  trendDurationHours: [1, 4],
-  volumeExpansionMult: 0.6,
-  consolidationBeforeBreakout: false,
-  displacementBodyMult: 3.0,
-  meanReversionAtExtremes: true,
-  minScoreDifference: 4,
-  maxConfluenceScore: 44,
-  behaviorNotes: [
-    'Moderate structure clarity — BOS/CHoCH form very fast',
-    'Very large FVGs (100–300 pips) that only partially fill',
-    'Strong mean reversion tendency at extremes',
   ],
 };
 
@@ -262,10 +172,7 @@ const BOOM1000_PROFILE: SyntheticProfile = {
 
 const SYNTHETIC_PROFILES: Record<SyntheticIndex, SyntheticProfile> = {
   V10: V10_PROFILE,
-  V25: V25_PROFILE,
-  V50: V50_PROFILE,
   V75: V75_PROFILE,
-  V100: V100_PROFILE,
   BOOM1000: BOOM1000_PROFILE,
 };
 

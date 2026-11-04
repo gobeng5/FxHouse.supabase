@@ -57,7 +57,7 @@ export interface TradeInput {
 }
 
 export function getPipValue(instrument: string): number {
-  const syntheticIndices = ['V10', 'V25', 'V50', 'V75', 'V100', 'BOOM1000'];
+  const syntheticIndices = ['V10', 'V75', 'BOOM1000'];
   if (syntheticIndices.includes(instrument)) return 0.01;
   if (instrument === 'USD/JPY' || instrument === 'GBP/JPY') return 0.01;
   if (instrument === 'XAU/USD' || instrument === 'XAG/USD') return 0.01;

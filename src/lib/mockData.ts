@@ -11,10 +11,7 @@ export const generateMockTradePlan = (instrument: TradingInstrument): TradePlan 
     'XAG/USD': { price: 48.25, direction: 'bullish' },
     'US100': { price: 25900, direction: 'bullish' },
     'V10': { price: 8500, direction: 'ranging' },
-    'V25': { price: 125000, direction: 'bullish' },
-    'V50': { price: 250000, direction: 'bullish' },
     'V75': { price: 425000, direction: 'bullish' },
-    'V100': { price: 850000, direction: 'bearish' },
     'BOOM1000': { price: 9500, direction: 'bullish' },
   };
 
