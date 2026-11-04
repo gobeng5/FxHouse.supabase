@@ -22,7 +22,7 @@ import { cleanSeries, firstIndexAtOrAfter, loadData } from './lib';
 import type { Candle, Series } from './lib';
 import { PRIMARY, setups as researchSetups } from './smc-choch-fvg';
 import { evaluateSmcChochFvg, SMC_CONFIDENCE, SMC_SETUP_TYPE, SMC_US100_SETUP_TYPE } from '../supabase/functions/_shared/analysis/smcChochFvg';
-import { evaluateGbpUsdZScore, evaluateV75InsideBarH1, evaluateXagDonchian, evaluateXauAsianBreakout } from '../supabase/functions/_shared/analysis/selectiveGems';
+import { evaluateEurUsdZScore, evaluateGbpUsdZScore, evaluateV75InsideBarH1, evaluateXagDonchian, evaluateXauAsianBreakout } from '../supabase/functions/_shared/analysis/selectiveGems';
 import { generateTradePlan } from '../src/lib/tradeSignalGenerator';
 import type { TradingInstrument } from '../src/types/trading';
 
@@ -261,6 +261,30 @@ for (const [inst, setup, find] of [
     `saved ${rows.length}; errors ${JSON.stringify(body.errors ?? [])}`);
   check('levels equal the shared gem', rows[0]?.entry_price === g.entry && rows[0]?.stop_loss === g.stopLoss && rows[0]?.take_profit_2 === g.takeProfit);
   check('alert marked SHADOW TEST', telegram.some(m => m.includes(inst) && m.includes('SHADOW TEST')));
+}
+
+// EUR/USD z-score: shadow since 2026-11-04 — admins only, and only when SMC has no EUR/USD setup.
+{
+  const fires = series.get('EUR/USD')!.h1.map(c => c.epoch + 3600 + 5).filter(t => {
+    nowEpoch = t;
+    const d1 = candlesAt('EUR/USD', 86400, 400).filter(c => c.epoch + 86400 <= t);
+    return d1.length >= 200 && evaluateEurUsdZScore(candlesAt('EUR/USD', 86400, 400), candlesAt('EUR/USD', 3600, 200), t)
+      && !evaluateSmcChochFvg('EUR/USD', candlesAt('EUR/USD', 14400, 250), candlesAt('EUR/USD', 3600, 200), t).setup;
+  });
+  nowEpoch = fires[Math.floor(fires.length / 2)];
+  console.log(`\n===== EUR/USD z-score shadow at ${new Date(nowEpoch * 1000).toISOString()} (${fires.length} firing hours) =====`);
+  admin = false;
+  await runEngine();
+  check('non-admin: no EUR/USD z-score signal saved', !inserts.some(r => r.setup_type === 'gem_eurusd_zscore'));
+  admin = true;
+  const body = await runEngine();
+  admin = false;
+  const rows = inserts.filter(r => r.setup_type === 'gem_eurusd_zscore');
+  check('admin: one EUR/USD z-score signal saved, marked shadow', rows.length === 1 && rows[0].shadow === true, `saved ${rows.length}; errors ${JSON.stringify(body.errors ?? [])}`);
+  check('alert marked SHADOW TEST', telegram.some(m => m.includes('EUR/USD') && m.includes('SHADOW TEST')));
+  const h4 = candlesAt('EUR/USD', 14400, 300);
+  const plan = generateTradePlan('EUR/USD', candlesAt('EUR/USD', 86400, 200), h4, candlesAt('EUR/USD', 3600, 200), h4[h4.length - 2].close, null, nowEpoch);
+  check('web app shows no EUR/USD z-score setup', plan.recommendation.setupType !== 'gem_eurusd_zscore');
 }
 
 // Synthetics still go through the existing engine path.

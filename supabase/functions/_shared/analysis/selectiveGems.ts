@@ -214,7 +214,7 @@ export function evaluateEurUsdZScore(
     confidence: 65,
     setupType: GEM_SETUP_TYPES.EURUSD_ZSCORE,
     tradeType: 'swing',
-    reason: `EUR/USD MTF Z-Score Swing: Daily EMA50/200 ${direction === 'bullish' ? 'bullish' : 'bearish'} bias with 1H statistical extreme (Z=${z.toFixed(2)}, RSI=${rsi.toFixed(1)}). Validated forward PF 1.25 (+5.0R).`,
+    reason: `SHADOW TEST — EUR/USD MTF Z-Score Swing: Daily EMA50/200 ${direction === 'bullish' ? 'bullish' : 'bearish'} bias with 1H statistical extreme (Z=${z.toFixed(2)}, RSI=${rsi.toFixed(1)}). Validated forward PF 1.25 (+5.0R). Forward test only; do not trade.`,
     parameters: [
       { label: 'Timeframe', value: '1H with Daily Filter', weight: 1, maxWeight: 1, contributing: true },
       { label: 'HTF Trend Bias', value: `Daily Close ${direction === 'bullish' ? '>' : '<'} EMA(50)/EMA(200)`, weight: 1, maxWeight: 1, contributing: true },

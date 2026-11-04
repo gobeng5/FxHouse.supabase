@@ -64,7 +64,6 @@ import { analyzeMarket } from '../../supabase/functions/_shared/analysis/marketA
 import type { AnalysisResult } from '../../supabase/functions/_shared/analysis/marketAnalysis.ts';
 import { evaluateSmcChochFvg, SMC_CONFIDENCE, smcSetupTypeFor } from '../../supabase/functions/_shared/analysis/smcChochFvg.ts';
 import {
-  evaluateEurUsdZScore,
   evaluateUsdJpyZScore,
   evaluateXagDonchian,
   evaluateV75InsideBar,
@@ -664,8 +663,6 @@ const applySmcStrategy = (
         breakevenRule: 'None — the stop is not moved',
       },
     };
-  } else if (instrument === 'EUR/USD') {
-    gemSetup = evaluateEurUsdZScore(dailyCandles, oneHourCandles, nowEpoch);
   } else if (instrument === 'USD/JPY') {
     gemSetup = evaluateUsdJpyZScore(oneHourCandles, fourHourCandles, nowEpoch);
   } else if (instrument === 'XAG/USD') {

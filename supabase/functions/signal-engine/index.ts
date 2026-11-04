@@ -1005,7 +1005,18 @@ function generateSmcSignal(
 // out of the app's lists and stats, and skip the arbiter so they never block a real
 // signal. Outcomes resolve as usual; Yaw compares them with their backtests.
 // Silver Donchian and US100 SMC ran here from 2026-10-26 and went live on 2026-10-31.
-const SHADOW_STRATEGIES: { instrument: string; m15?: boolean; evaluate: (h4: CandleData[], h1: CandleData[], now: number, m15: CandleData[]) => SignalOutput | null }[] = [
+const SHADOW_STRATEGIES: { instrument: string; m15?: boolean; d1?: boolean; evaluate: (h4: CandleData[], h1: CandleData[], now: number, m15: CandleData[], d1: CandleData[]) => SignalOutput | null }[] = [
+  {
+    // The EUR/USD Z-score gem, live 2026-10-17 to 2026-11-04, as it ran: only when SMC has no
+    // EUR/USD setup. Deriv's daily count spans weekends: 400 returns the ~285 the gem needs.
+    instrument: 'EUR/USD',
+    d1: true,
+    evaluate: (h4, h1, now, _m15, d1) => {
+      if (d1.length < 200 || generateSmcSignal('EUR/USD', h4, h1, now)) return null;
+      const g = evaluateEurUsdZScore(d1, h1, now);
+      return g ? generateSelectiveGemSignal(g, h1, now) : null;
+    },
+  },
   {
     // The GBP/USD z-score gem as it would run live: only in hours when SMC has no GBP/USD setup.
     instrument: 'GBP/USD',
@@ -1033,10 +1044,11 @@ async function runShadowStrategies(supabase: ReturnType<typeof createClient>, se
   for (const sh of SHADOW_STRATEGIES) {
     try {
       const symbol = DERIV_SYMBOL_MAP[sh.instrument];
-      const [fourHour, oneHour, fifteen] = await Promise.all([
+      const [fourHour, oneHour, fifteen, daily] = await Promise.all([
         fetchCandles(symbol, 14400, 250), fetchCandles(symbol, 3600, 200), sh.m15 ? fetchCandles(symbol, 900, 120) : Promise.resolve([]),
+        sh.d1 ? fetchCandles(symbol, 86400, 400) : Promise.resolve([]),
       ]);
-      const signal = sh.evaluate(fourHour, oneHour, nowEpoch, fifteen);
+      const signal = sh.evaluate(fourHour, oneHour, nowEpoch, fifteen, daily);
       if (!signal) continue;
 
       // Once per trigger candle, and one open shadow trade per instrument.
@@ -2121,31 +2133,23 @@ Deno.serve(async (req) => {
               candidates = [smc ? { ...smc, setup_type: smcSetupTypeFor(instrument) } : null];
             }
           } else if (isForex) {
-            // Forex and gold: SMC CHoCH + FVG primary; if no setup, EUR/USD also checks its Z-score gem
+            // Forex and gold: SMC CHoCH + FVG primary; if no setup, USD/JPY checks its Z-score gem.
+            // (The EUR/USD Z-score gem moved to the shadow list on 2026-11-04.)
             const fetches: Promise<CandleData[]>[] = [
               // USD/JPY's Z-score gem reads the H4 EMA50, which needs a longer H4 window.
               fetchCandles(symbol, 14400, instrument === 'USD/JPY' ? 250 : 100),
               fetchCandles(symbol, 3600, 200),
             ];
-            if (instrument === 'EUR/USD') {
-              // Deriv's count spans calendar days, weekends included: 250 returns ~180 forex
-              // dailies, under the 200 closed ones the EUR/USD gem needs. 400 returns ~285.
-              fetches.push(fetchCandles(symbol, 86400, 400));
-            }
             const fetched = await Promise.all(fetches);
             const fourHour = fetched[0];
             const oneHour = fetched[1];
-            const daily = fetched[2] ?? [];
 
             const nowEpoch = Math.floor(Date.now() / 1000);
             const smc = generateSmcSignal(instrument, fourHour, oneHour, nowEpoch);
             let gemSignal: SignalOutput | null = null;
             // The GBP/JPY momentum gem is retired (it lost money on closed candles); GBP/JPY trades SMC only.
             if (!smc) {
-              if (instrument === 'EUR/USD' && daily.length >= 200) {
-                const eurGem = evaluateEurUsdZScore(daily, oneHour, nowEpoch);
-                if (eurGem) gemSignal = generateSelectiveGemSignal(eurGem, oneHour, nowEpoch);
-              } else if (instrument === 'USD/JPY') {
+              if (instrument === 'USD/JPY') {
                 const jpyGem = evaluateUsdJpyZScore(oneHour, fourHour, nowEpoch);
                 if (jpyGem) gemSignal = generateSelectiveGemSignal(jpyGem, oneHour, nowEpoch);
               }

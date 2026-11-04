@@ -13,7 +13,7 @@ const NAMES: Record<string, string> = {
   gem_boom1000_donchian: 'BOOM1000 Donchian Breakout',
   gem_xag_donchian: 'Silver Donchian Breakout',
   smc_choch_fvg_us100: 'US100 SMC CHoCH + FVG',
-  gem_eurusd_zscore: 'EUR/USD Z-Score Reversion',
+  gem_eurusd_zscore: 'EUR/USD Z-Score Reversion (shadow)',
   gem_usdjpy_zscore: 'USD/JPY Z-Score Reversion',
   gem_gbpusd_zscore: 'GBP/USD Z-Score Reversion (shadow)',
   gem_xau_asia_breakout: 'Gold Asian Breakout (shadow)',
