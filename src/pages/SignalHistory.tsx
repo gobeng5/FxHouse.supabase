@@ -23,6 +23,7 @@ import {
 import { cn } from '@/lib/utils';
 import { ALL_INSTRUMENTS, TradingInstrument, getInstrumentDecimals } from '@/types/trading';
 import { format } from 'date-fns';
+import { pipSize } from '@/lib/intrabarResolution';
 
 const SignalHistoryPage = () => {
   const { signals, stats, loading, updateSignalOutcome, refreshSignals, reconcileClosedOutcomes } = useGeneratedSignals();
@@ -74,13 +75,29 @@ const SignalHistoryPage = () => {
 
   const handleUpdateOutcome = async () => {
     if (!selectedSignal || !outcomeForm.outcome) return;
-    
+
+    const exitPrice = outcomeForm.exitPrice ? parseFloat(outcomeForm.exitPrice) : undefined;
+    let pnlPips = outcomeForm.pnlPips ? parseFloat(outcomeForm.pnlPips) : undefined;
+    // A manual close with an exit price stores pips and R as the engine does (from the fill),
+    // so strategy health and the stats count it like any resolved trade.
+    let replay: { resolvedAtEpoch: null; rMultiple: number; generatedAt: string } | undefined;
+    if (exitPrice != null && outcomeForm.outcome !== 'cancelled') {
+      const pip = pipSize(selectedSignal.instrument);
+      const fill = selectedSignal.effective_entry ?? selectedSignal.entry_price;
+      const moved = (selectedSignal.direction === 'bullish' ? exitPrice - fill : fill - exitPrice) / pip;
+      const riskPips = Math.abs(fill - selectedSignal.stop_loss) / pip;
+      pnlPips ??= Number(moved.toFixed(1));
+      replay = { resolvedAtEpoch: null, rMultiple: riskPips > 0 ? moved / riskPips : 0, generatedAt: selectedSignal.generated_at };
+    }
+
     const success = await updateSignalOutcome(
       selectedSignal.id,
       outcomeForm.outcome,
-      outcomeForm.exitPrice ? parseFloat(outcomeForm.exitPrice) : undefined,
-      outcomeForm.pnlPips ? parseFloat(outcomeForm.pnlPips) : undefined,
-      outcomeForm.notes || undefined
+      exitPrice,
+      pnlPips,
+      outcomeForm.notes || undefined,
+      undefined,
+      replay
     );
 
     if (success) {
